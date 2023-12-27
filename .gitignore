@@ -1,0 +1,10 @@
+obj/
+*.d
+dump
+wyrt
+wyrt_Release
+Specification.aux
+Specification.log
+Specification.synctex.gz
+Specification.toc
+Specification.pdf

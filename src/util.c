@@ -36,13 +36,17 @@ RET:
 
 void *dynarr_at(DynArr *da, size_t index)
 {
-	return &da->data[da->elem_size * index];	
+	if(da->data)
+		return &da->data[da->elem_size * index];
+	else return NULL;
 }
 
 
 void *dynarr_from_back(DynArr *da, size_t from_back)
 {
-	return &da->data[da->elem_size * (da->count - from_back - 1)];
+	if(da->data)
+		return &da->data[da->elem_size * (da->count - from_back - 1)];
+	else return NULL;
 }
 
 void dynarr_push(DynArr *da, void *val, Error *err)

@@ -13,6 +13,11 @@ int main(int argc, char **argv)
 	CmdlineOptions options = { 0 };
 	Error err = ERROR_OK;
 
+	DynArr tokens = { 0 };
+	DynArr identifiers = { 0 };
+
+	FILE *file = NULL;
+	
 	for(int i = 1; i < argc; i++) {
 		int string_length = 0;
 		char garbage;
@@ -28,11 +33,17 @@ int main(int argc, char **argv)
 			goto RET;
 		} else if(sscanf(argv[i], "--token-dump=%c", &garbage)) {
 			sscanf(argv[i], "--token-dump=%*s%n", &string_length);
+			if(string_length == 0) {
+				err = ERROR_UNEXPECTED_DATA;
+				fprintf(stderr, "Expected File Path.\n");
+				goto RET;
+			}
 			char *path = malloc(string_length + 1);
 			if(!path) {
 				err = ERROR_OUT_OF_MEMORY;
 				goto RET;
 			}
+
 			sscanf(argv[i], "--token-dump=%s", path);
 			options.tokenDumpFile = path;
 			printf("INFO: token dump to '%s'\n", path);
@@ -67,15 +78,14 @@ int main(int argc, char **argv)
 	lexer_init(&lexer, options.srcFile, &err);
 	if(err) goto RET;
 
-	DynArr tokens;
+
 	dynarr_init(&tokens, sizeof(Token));
-	DynArr identifiers;
 	dynarr_init(&identifiers, sizeof(char *));
 
 	lexer_tokenize(&lexer, &tokens, &identifiers, &err);
 	if(err) goto RET;
 
-	FILE *file = fopen(options.tokenDumpFile, "w");
+	file = fopen(options.tokenDumpFile, "w");
 	if(options.tokenDumpFile) {
 		if(!file) {
 			fprintf(stderr, "Unable to Open Token Dump File.\n");

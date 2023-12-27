@@ -47,6 +47,7 @@ void lexer_clean(Lexer *lex)
 
 void lexer_clean_identifiers(DynArr *identifiers)
 {
+	if(!identifiers->data) return;
 	for(size_t i = 3; i < identifiers->count - 1; i++) {
 		free(dynarr_at(identifiers, i));
 	}

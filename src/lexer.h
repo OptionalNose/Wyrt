@@ -4,6 +4,7 @@
 
 typedef enum {
 	TOKEN_NONE,
+	TOKEN_EOF,
 	
 	TOKEN_COLON,
 	
@@ -61,19 +62,19 @@ typedef struct {
 
 void lexer_init(Lexer *lex, char *file_path, Error *err);
 void lexer_clean(Lexer *lex);
-void lexer_clean_identifiers(DynArr *identifiers);
+void lexer_clean_identifiers(char **identifiers, size_t identifier_count);
 
 void lexer_tokenize(
 	Lexer *lex,
-	DynArr *tokens,
-	DynArr *identifiers,
+	Token **tokens, size_t *token_count,
+	char ***identifiers, size_t *identifier_count,
 	Error *err
 );
 
 void lexer_print_token_to_file(
 	FILE *file,
-	Token *tok,
-	DynArr *identifiers
+	Token const *tok,
+	char *const *identifiers
 );
 
-void lexer_print_debug_to_file(FILE *file, DebugInfo *const debug);
+void lexer_print_debug_to_file(FILE *file, DebugInfo const *debug);

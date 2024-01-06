@@ -37,7 +37,7 @@ RET:
 void *dynarr_at(DynArr *da, size_t index)
 {
 	if(da->data)
-		return &da->data[da->elem_size * index];
+		return &((char*)da->data)[da->elem_size * index];
 	else return NULL;
 }
 
@@ -45,7 +45,7 @@ void *dynarr_at(DynArr *da, size_t index)
 void *dynarr_from_back(DynArr *da, size_t from_back)
 {
 	if(da->data)
-		return &da->data[da->elem_size * (da->count - from_back - 1)];
+		return &((char*)da->data)[da->elem_size * (da->count - from_back - 1)];
 	else return NULL;
 }
 

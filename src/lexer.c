@@ -45,13 +45,13 @@ void lexer_clean(Lexer *lex)
 	free(lex->file_contents);
 }
 
-void lexer_clean_identifiers(DynArr *identifiers)
+void lexer_clean_identifiers(char **identifiers, size_t identifier_count)
 {
-	if(!identifiers->data) return;
-	for(size_t i = 3; i < identifiers->count - 1; i++) {
-		free(dynarr_at(identifiers, i));
+	if(!identifiers) return;
+	for(size_t i = 3; i < identifier_count - 1; i++) {
+		free(identifiers[i]);
 	}
-	dynarr_clean(identifiers);
+	free(identifiers);
 }
 
 static int get_char(
@@ -110,19 +110,21 @@ static void backup(
 
 void lexer_tokenize(
 	Lexer *lex,
-	DynArr *tokens,
-	DynArr *identifiers,
+	Token **tokens, size_t *token_count,
+	char ***identifiers, size_t *identifier_count,
 	Error *err
 )
 {
-	dynarr_init(tokens, sizeof(Token));
-	dynarr_init(identifiers, sizeof(char *));
+	DynArr toks;
+	DynArr idents;
+	dynarr_init(&toks, sizeof(Token));
+	dynarr_init(&idents, sizeof(char *));
 
-	dynarr_push(identifiers, &(char *){"main"}, err);
+	dynarr_push(&idents, &(char *){"main"}, err);
 	if(*err) goto RET;
-	dynarr_push(identifiers, &(char *){"void"}, err);
+	dynarr_push(&idents, &(char *){"void"}, err);
 	if(*err) goto RET;
-	dynarr_push(identifiers, &(char *){"u8"}, err);
+	dynarr_push(&idents, &(char *){"u8"}, err);
 	if(*err) goto RET;
 	
 	size_t pos = 0;
@@ -212,11 +214,14 @@ void lexer_tokenize(
 				dynarr_push(&string_builder, &c, err);
 				if(*err) goto RET;
 
+				c = get_char(lex, &pos, &line, &col, &prev_col);
+				
 				if(
 					string_builder.count == strlen("const")
 					&& !memcmp(
 						string_builder.data, "const", strlen("const")
 					)
+					&& isspace(c)
 				) {
 					tok.type = TOKEN_CONST;
 					goto NEXT_TOK;
@@ -225,20 +230,24 @@ void lexer_tokenize(
 					&& !memcmp(
 						string_builder.data, "return", strlen("return")
 					)
+					&& isspace(c)
 				) {
 					tok.type = TOKEN_RETURN;
 					goto NEXT_TOK;
 				}
+
+				backup(lex, &pos, &line, &col, prev_col);
 			}
 			dynarr_push(&string_builder, &(char){'\0'}, err);
 			if(*err) goto RET;
 
 			bool found = false;
 			size_t id;
-			for(size_t i = 0; i < identifiers->count; i++) {
+			for(size_t i = 0; i < idents.count; i++) {
 				if(
 					strcmp(
-						string_builder.data, *(char **)dynarr_at(identifiers, i)
+						string_builder.data,
+						*(char **)dynarr_at(&idents, i)
 					) == 0
 				) {
 					found = true;
@@ -246,8 +255,8 @@ void lexer_tokenize(
 				}
 			}
 			if(!found) {
-				id = identifiers->count;
-				dynarr_push(identifiers, &string_builder.data, err);
+				id = idents.count;
+				dynarr_push(&idents, &string_builder.data, err);
 				if(*err) goto RET;
 			}
 
@@ -281,24 +290,46 @@ void lexer_tokenize(
 		tok.type = TOKEN_ARROW;	
 		
 NEXT_TOK:
-		dynarr_push(tokens, &tok, err);
+		dynarr_push(&toks, &tok, err);
 		if(*err) goto RET;
 	}
 	
 RET:
+	dynarr_push(
+		&toks,
+		&(Token) {
+			.debug = {
+				.type = TOKEN_EOF,
+				.debug_info = {
+					.file = lex->file_path,
+					.line = line,
+					.col = col,
+				},
+			},
+		},
+		err
+	);
+
 	dynarr_clean(&string_builder);
+	*identifiers = (char **)idents.data;
+	*identifier_count = idents.count;
+	*tokens = (Token *)toks.data;
+	*token_count = toks.count;
 	return;
 }
 
 void lexer_print_token_to_file(
 	FILE *file,
-	Token *tok,
-	DynArr *identifiers
+	Token const *tok,
+	char *const *identifiers
 )
 {
 	switch(tok->type) {
 	case TOKEN_NONE:
 		fputs("NONE", file);
+		break;
+	case TOKEN_EOF:
+		fputs("EOF", file);
 		break;
 	case TOKEN_COLON:
 		fputs(":", file);
@@ -334,7 +365,7 @@ void lexer_print_token_to_file(
 		fprintf(
 			file,
 			"Identifier '%s'",
-			*(char **)dynarr_at(identifiers, tok->ident.id)
+			identifiers[tok->ident.id]
 		);
 		break;
 	case TOKEN_INT_LIT:
@@ -342,12 +373,12 @@ void lexer_print_token_to_file(
 		break;
 	}
 	
-	fputs("\t\t\t", file);
+	fputs(" at ", file);
 	lexer_print_debug_to_file(file, &tok->debug.debug_info);
 	fputc('\n', file);
 }
 
-void lexer_print_debug_to_file(FILE *file, DebugInfo *const debug)
+void lexer_print_debug_to_file(FILE *file, DebugInfo const *debug)
 {
 	fprintf(
 		file,

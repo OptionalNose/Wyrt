@@ -1,6 +1,6 @@
 \documentclass{article}
 \usepackage{bm}
-\title{PROJECT CHARLES}
+\title{Wyrt}
 \author{Jacob Beveridge}
 \date{v0.1 WIP}
 \begin{document}
@@ -9,13 +9,13 @@
 \maketitle
 \tableofcontents
 \section{About This Document}
-	This Document defines PROJECT CHARLES version 0.1 Source Code.
-	\subsection{Tooling} The `Compiler' is any program that takes PROJECT CHARLES Source Code as input and produces either an object or executable file as output. An `Error' is a diagnostic message produced by the Compiler upon the input of erroneous Source Code, accompianied by the Compiler not producing output.
-	\subsection{Notation} Any text in italics is a formula thast defines syntax. Any non-bolded text in a formula represents some non-fixed text. Any bolded text in a formula represents fixed texts. Unless otherwise stated: two pieces of non-fixed text must be separated by at least one whitespace character, and a piece of fixed next need not but may be separated from any surrounding non-fixed text by any amount of whitespace. Square Brackets (\textit{[]}) surround optional text. An Asterisk(\textit(*)) means that the preceding optional text may be repeated any number of times, including zero.
+	This Document defines Wyrt version 0.1 Source Code.
+	\subsection{Tooling} The `Compiler' is any program that takes Wyrt Source Code as input and produces either an object or executable file as output. An `Error' is a diagnostic message produced by the Compiler upon the input of erroneous Source Code, accompianied by the Compiler not producing output.
+	\subsection{Notation} Any text in italics is a formula that defines syntax. Any non-bolded text in a formula represents some non-fixed text. Any bolded text in a formula represents fixed text. Unless otherwise stated: two pieces of non-fixed text must be separated by at least one whitespace character, and a piece of fixed next need not but may be separated from any surrounding non-fixed text by any amount of whitespace. Square Brackets (\textit{[]}) surround optional text. An Asterisk(\textit(*)) means that the preceding optional text may be repeated any number of times, including zero.
 \section{Definitions}
 	\begin{description}
-	\item[Module] The contents of a PROJECT CHARLES source file. Comprised of Declarations.
-	\item[Declaration] Of the form \textit{access identifier \textbf{:} type [\textbf{=} value]\textbf{;}}. Creates a new Identifier \textit{identifier} which refers to a Value of Type \textit{type} and can be accessed according to Access Modifier \textit{access}. If a Value \textit{value} is present, then the Value of \textit{identifier} is equal to \textit{value} until \textit{identifier} is Modified and we say that \textit{identifier} is `initialized' to \textit{value}. If \textit{type} is a Function Type then \textit{identifier} is a Function and \textit{access} is not \textit{const}. The Compiler shall issue an Error if \textit{value} is not present and \textit{access} is \textit{const}, or if the Type of \textit{value} is not compatible with \textit{type}.
+	\item[Module] The contents of a Wyrt source file. Comprised of Declarations.
+	\item[Declaration] Of the form \textit{access identifier \textbf{:} type [\textbf{=} value]\textbf{;}}. Creates a new Identifier \textit{identifier} which refers to a Value of Type \textit{type} and can be accessed according to Access Modifier \textit{access}. If a Value \textit{value} is present, then the Value of \textit{identifier} is equal to \textit{value} until \textit{identifier} is Modified and we say that \textit{identifier} is `initialized' to \textit{value}. If \textit{type} is a Function Type then \textit{identifier} is a Function and the Compiler shall issue an Error if \textit{access} is not \textit{const}. The Compiler shall issue an Error if \textit{access} is \textit{const} and \textit{value} is not present, or if the Type of \textit{value} is not compatible with \textit{type}.
 	\item[Access Modifier] \textit{const}.
 	\item[Identifier] A sequence of characters starting with any of:
 		\begin{quote}
@@ -25,7 +25,7 @@
 		\begin{quote}
 		$\_$ @ A B C D E F G H I J K L M N O P Q R S T U V W X Y Z a b c d e f g h i j k l m n o p q r s t u v w x y z 0 1 2 3 4 5 6 7 8 9
 		\end{quote}
-		The Compiler shall issue a warning if it encounters an Identifier lexicographically identical to a Keyword. Some Identifiers have a special meaning or must be used a certain way; see Behavior, Special Identifiers.
+		The Compiler shall issue an error if it encounters an Identifier lexicographically identical to a Keyword. Some Identifiers have a special meaning or must be used a certain way; see Behavior, Special Identifiers.
 	\item[Type] Either:
 		\begin{description}
 		\item[Data Type] One of:
@@ -33,7 +33,7 @@
 			void char u8 u16 u32 u64 u128 u256 i8 i16 i32 i64 i128 i256 f16 f32 f64 f128 
 			\end{quote}
 			Two Data Types are `equivalent' if and only if they are the same. Two Data Types are `compatible' if and only if they are equivalent.
-		\item[Function Type] Of either the form \textit{(void) \ret type} or \textit{(identifier\textbf{:} type [\textbf{,} identifier\textbf{:} type]*) \ret type}, where each \textit{type} is a potentially unique Data Type. In the First Case, the Function Type has no Parameters. In the Second Case, each \textit{identifier} must be lexicographically unique, and is said to be a Parameter of Type \textit{type} of the Function Type. The Compiler shall issue an Error if the Type of any Parameter is \textit{void}. In both cases, the \textit{type} after the \textit{\ret} is the Return Type of the Function Type. Two Function Types are `equivalent' if and only if they have an equal number of Parameters, each matching Parameter has an equivalent Data Type, and both Return Types are equivalent. Two Function Types are `compatible' if and only if they are equivalent.
+		\item[Function Type] Either of the form \textit{\textbf{() \ret} type} or \textit{(identifier\textbf{:} type [\textbf{,} (identifier\textbf{:} type]*) \ret type}, where each \textit{type} is a potentially unique Data Type. In the First Case, the Function Type has no Parameters. In the Second Case, each \textit{identifier} must be lexicographically unique, and is said to be a Parameter of Type \textit{type} of the Function Type. The Compiler shall issue an Error if the Type of any Parameter is \textit{void}. In both cases, the \textit{type} after the \textit{\ret} is the Return Type of the Function Type. Two Function Types are `equivalent' if and only if they have an equal number of Parameters, each matching Parameter has an equivalent Data Type, and both Return Types are equivalent. Two Function Types are `compatible' if and only if they are equivalent.
 		\end{description}
 		A Data Type and a Function type are never equivalent nor compatible.
 	\item[Value] A Block.
@@ -52,7 +52,7 @@
 \subsection{Special Identifiers}
 	\begin{itemize}
 	\item[] There are several ``builtin'' Types which are predefined Identifiers; see Definitions, Data Type. The Compiler shall issue an Error if any of these Identifiers are used as anything other than a Data Type.
-	\item[] ``main'' must be Declared with a Function Type of ``(void) \ret u8''. 
+	\item[] ``main'' must be Declared with a Function Type of ``() \ret u8''. 
 	\end{itemize}
 \section{Behavior}
 	\subsection{Entry and Exit} The Program starts at the first line of ``main'' and proceeds statement by statement. The Program terminates when the ``main'' function returns.

@@ -120,11 +120,11 @@ void lexer_tokenize(
 	dynarr_init(&toks, sizeof(Token));
 	dynarr_init(&idents, sizeof(char *));
 
-	dynarr_push(&idents, &(char *){"main"}, err);
+	dynarr_push(&idents, &(char *){"u8"}, err);
 	if(*err) goto RET;
 	dynarr_push(&idents, &(char *){"void"}, err);
 	if(*err) goto RET;
-	dynarr_push(&idents, &(char *){"u8"}, err);
+	dynarr_push(&idents, &(char *){"main"}, err);
 	if(*err) goto RET;
 	
 	size_t pos = 0;

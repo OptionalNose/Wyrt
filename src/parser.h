@@ -1,10 +1,10 @@
 #pragma once
 
 #include "lexer.h"
-#include "util.h"
 
 typedef enum {
 	AST_NONE,
+	AST_MODULE,
 	AST_DECL,
 	AST_FN_TYPE,
 	AST_CONST,
@@ -12,7 +12,6 @@ typedef enum {
 	AST_BLOCK,
 	AST_RET,
 	AST_INT_LIT,
-	AST_MODULE,
 } AstNodeType;
 
 typedef union {

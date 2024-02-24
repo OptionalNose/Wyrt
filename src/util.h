@@ -51,3 +51,24 @@ void *dynarr_at(DynArr *da, size_t index);
 void *dynarr_from_back(DynArr *da, size_t from_back);
 void dynarr_push(DynArr *da, void *val, Error *e);
 void dynarr_pop(DynArr *da, void *val);
+
+typedef struct {
+	char *str;
+	size_t count;
+	size_t capacity;
+} StringBuilder;
+
+void string_builder_append(StringBuilder *sb, const char *str, Error *err);
+
+void string_builder_printf(
+	StringBuilder *sb,
+	Error *err,
+	const char *fmt_str,
+	...
+);
+
+void string_builder_append_va(
+	StringBuilder *sb,
+	Error *err,
+	...
+);

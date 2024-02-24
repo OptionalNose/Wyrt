@@ -4,8 +4,8 @@
 
 # Compiler settings - Can be customized.
 CC = clang
-CFLAGS = -std=c99 -fcolor-diagnostics `llvm-config --cflags`
-LDFLAGS = -lm -lc `llvm-config --ldflags --libs all`
+CFLAGS = -std=c99 -fcolor-diagnostics
+LDFLAGS = -lm -lc
 
 # Visibility for later
 SPECIAL_FLAGS = -O0 -g -fsanitize=undefined,address

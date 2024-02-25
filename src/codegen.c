@@ -10,6 +10,15 @@
 	*err = ERROR_UNEXPECTED_DATA; \
 	goto RET; } while(0);
 
+#define FPRINTF_OR_ERR(file, fmt, ...) \
+	do { \
+		if(fprintf(file, fmt, __VA_ARGS__) < 0) { \
+			fprintf(stderr, "Error: Unable to Write to IR File\n"); \
+			*err = ERROR_IO; \
+			goto RET; \
+		} \
+	} while (0)
+
 void codegen_init(CodeGen *cg)
 {
 	cg->unnamed_counter = 4;
@@ -30,7 +39,7 @@ const char *integral_type_to_string(size_t id)
 }
 
 void gen_decl(
-	StringBuilder *ir_builder,
+	FILE *output,
 	const AstNode *nodes,
 	size_t index,
 	char *const *identifiers,
@@ -58,14 +67,12 @@ void gen_decl(
 		INVALID_AST_NODE("Invalid Return Type", ret_type);
 	}
 
-	string_builder_printf(
-		ir_builder,
-		err,
-		"define external ccc %s @%s(",
-		return_type,
-		identifiers[ident->ident.id]
+	FPRINTF_OR_ERR(
+			output,
+			"define external ccc %s @%s(",
+			return_type,
+			identifiers[ident->ident.id]
 	);
-	if(*err) goto RET;
 
 	for(size_t i = 0; i < data_type->fn_type.arg_count; i++) {
 		const AstNode *arg_ident = &nodes[data_type->fn_type.args[2*i]];
@@ -82,26 +89,21 @@ void gen_decl(
 			INVALID_AST_NODE("Expected Type", arg_type);
 		}
 
-		string_builder_append_va(
-			ir_builder,
-			err,
-			type,
-			identifiers[arg_ident->ident.id],
-			NULL
+		FPRINTF_OR_ERR(
+			output,
+			"%s %s",
+			type, identifiers[arg_ident->ident.id]
 		);
-		if(*err) goto RET;
 
 		if(i != data_type->fn_type.arg_count - 1) {
-			string_builder_append(ir_builder, ", ", err);
-			if(*err) goto RET;	
+			FPRINTF_OR_ERR(output, ", ", NULL);
 		}
 	}
 	
-	
-	string_builder_printf(
-		ir_builder, err, ") !dbg !%d {\n", *unnamed_counter + 1
+
+	FPRINTF_OR_ERR(
+		output, ") !dbg !%ju {\n", *unnamed_counter + 1	
 	);
-	if(*err) goto RET;
 	
 	const AstNode *body = &nodes[decl->decl.initial]; // initial == 0 -> module
 
@@ -122,18 +124,17 @@ void gen_decl(
 				INVALID_AST_NODE("Expected Integer Literal", ret_val);
 			}
 
-			string_builder_printf(
-				ir_builder,
-				err,
+			FPRINTF_OR_ERR(
+				output,
 				"\tret %s %" PRIdMAX
 				", !dbg !DILocation(line: %" PRIu32 ", column: %" PRIu32
-				", scope: !%d)\n",
+				", scope: !%ju)\n",
 				return_type, ret_val->int_lit.val,
 				ret_val->debug.debug_info.line,
 				ret_val->debug.debug_info.col,
 				*unnamed_counter + 1
 			);
-			if(*err) goto RET;
+
 			break;
 
 			
@@ -142,25 +143,14 @@ void gen_decl(
 		}
 	}
 
-	string_builder_append(
-		ir_builder, "}\n", err
-	);
-	if(*err) goto RET;
-
-	string_builder_printf(
-		ir_builder, err,
-		"!%" PRIuMAX " = !DISubroutineType(types: !{",
-		*unnamed_counter
-	);
-	if(*err) goto RET;
-
-	string_builder_printf(
-		ir_builder, err,
+	FPRINTF_OR_ERR(
+		output,
+		"}\n !%ju = !DISubroutineType(types: !{"
 		"!DIBasicType(name: \"%s\", size: %d, encoding: %s)%s",
+		*unnamed_counter,
 		identifiers[ret_type->ident.id], 8, "DW_ATE_unsigned", // size and encoding hardcoded
 		data_type->fn_type.arg_count ? ", " : ""
 	);
-	if(*err) goto RET;
 
 	for(size_t i = 0; i < data_type->fn_type.arg_count; i++) {
 		const AstNode *arg_type = &nodes[data_type->fn_type.args[2*i + 1]];
@@ -174,36 +164,31 @@ void gen_decl(
 			INVALID_AST_NODE("Expected Type", arg_type);
 		}
 
-		string_builder_printf(
-			ir_builder, err,
+		FPRINTF_OR_ERR(
+			output,
 			"!DIBasicType(name: \"%s\", size: %d, encoding: %s)",
 			identifiers[arg_type->ident.id], 8, "DW_ATE_unsigned" //size and encoding hardcoded
 		);
-		if(*err) goto RET;
 
 		if(i < data_type->fn_type.arg_count - 1) {
-			string_builder_append(ir_builder, ", ", err);
-			if(*err) goto RET;
+			FPRINTF_OR_ERR(output, ", ", NULL);
 		}
 	}
 
-	string_builder_append(ir_builder, "})\n", err);
-	if(*err) goto RET;
-
-	*unnamed_counter += 1;
-	
-	string_builder_printf(
-		ir_builder, err,
-		"!%d = distinct !DISubprogram(\n"
+	FPRINTF_OR_ERR(
+		output,
+		"})\n"
+		"!%ju = distinct !DISubprogram(\n"
 		"\tname: \"%s\", scope: !1, file: !1, line: %" PRIu32 ",\n"
-		"\ttype: !%" PRIuMAX ", spFlags: DISPFlagDefinition, \n"
+		"\ttype: !%ju, spFlags: DISPFlagDefinition, \n"
 		"\tflags: DIFlagPrototyped, scopeLine: %" PRIu32 ", unit: !0\n)\n",
-		*unnamed_counter,
+		*unnamed_counter + 1,
 		identifiers[ident->ident.id], decl->debug.debug_info.line,
-		*unnamed_counter - 1,
+		*unnamed_counter,
 		decl->debug.debug_info.line
 	);
-	if(*err) goto RET;
+
+	*unnamed_counter += 1;
 
 RET:
 	return;	
@@ -218,38 +203,35 @@ void codegen_gen(
 	Error *err
 )
 {
-	StringBuilder ir_builder = { 0 };
+	FILE *output = fopen(dump_path, "w");
+	if(!output) goto RET;
 
 	const AstNode *module = &nodes[0];
 
-	string_builder_append_va(
-		&ir_builder,
-		err,
-		"source_filename = \"",
-		module->debug.debug_info.file, "\"\n"
+	FPRINTF_OR_ERR(
+		output,
+		"source_filename = \"%s\"\n"
 		"!0 = distinct !DICompileUnit(\n"
 		"\tlanguage: DW_LANG_C, file: !1, producer: \"wyrtc\",\n"
 		"\tisOptimized: false, runtimeVersion: 0,\n"
 		"\temissionKind: FullDebug, splitDebugInlining: false,\n"
 		"\tnameTableKind: None\n"
 		")\n"
-		"!1 = !DIFile(filename: \"",
-		module->debug.debug_info.file, "\""
-		", directory: \".\")\n"
+		"!1 = !DIFile(filename: \"%s\", directory: \".\")\n"
 		"!2 = !{i32 7, !\"Dwarf Version\", i32 5}\n"
 		"!3 = !{i32 2, !\"Debug Info Version\", i32 3}\n"
 		"!llvm.dbg.cu = !{!0}\n"
 		"!llvm.module.flags = !{!2, !3}\n",
-		NULL
+		module->debug.debug_info.file,
+		module->debug.debug_info.file
 	);
-	if(*err) goto RET;
 
 	for(size_t i = 0; i < module->module.statement_count; i++) {
 		size_t index = module->module.statements[i];
 		switch(nodes[index].type) {
 		case AST_DECL:
 			gen_decl(
-				&ir_builder, nodes, index, identifiers,
+				output, nodes, index, identifiers,
 				&cg->unnamed_counter, err
 			);
 			if(*err) goto RET;
@@ -261,15 +243,7 @@ void codegen_gen(
 		}
 	}
 	
-	FILE *dump = fopen(dump_path, "w");
-	if(!dump) {
-		*err = ERROR_IO;
-		goto RET;
-	}
-	fwrite(ir_builder.str, 1, ir_builder.count - 1, dump);
-	fclose(dump);
-	
 RET:
-	free(ir_builder.str);
+	fclose(output);
 	return;
 }

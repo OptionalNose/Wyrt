@@ -224,7 +224,8 @@ int main(int argc, char **argv)
 
 	StringBuilder compile = { 0 };
 	string_builder_printf(
-		&compile, &err, "clang -c -x ir %s -o %s", ir_file, obj_file
+		&compile, &err, "clang -Wno-override-module -c -x ir %s -o %s",
+		ir_file, obj_file
 	);
 	if(err) goto RET;
 

@@ -66,9 +66,3 @@ void string_builder_printf(
 	const char *fmt_str,
 	...
 );
-
-void string_builder_append_va(
-	StringBuilder *sb,
-	Error *err,
-	...
-);

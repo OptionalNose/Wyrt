@@ -76,19 +76,16 @@ void string_builder_append(StringBuilder *sb, const char *str, Error *err)
 		.capacity = sb->capacity
 	};
 
-	char c;
-	while((c = *(str++)) != 0) {
-		dynarr_push(&raw, &c, err);
-		if(*err) goto RET;
-	}
-	dynarr_push(&raw, &(char){'\0'}, err);
-	if(*err) goto RET;
+	size_t len = strlen(str);
 
-	*sb = (StringBuilder) {
-		.str = raw.data,
-		.count = raw.count,
-		.capacity = raw.count,
-	};
+	sb->count += len;
+
+	if(sb->count >= sb->capacity) {
+		sb->str = realloc(sb->str, sb->count * 2);
+		CHECK_MALLOC(sb->str);
+	}
+
+	strcpy(sb->str + sb->count - len, str);
 	
 RET:
 	return;
@@ -120,37 +117,22 @@ void string_builder_printf(
 	
 	long len = ftell(tmp);
 
-	char *formatted = malloc(len + 1);
-	formatted[len] = '\0';
-	CHECK_MALLOC(formatted);
+	sb->count += len;
+
+	if(sb->count >= sb->capacity) {
+		sb->str = realloc(sb->str, sb->count * 2);
+		CHECK_MALLOC(sb->str);
+	}
 
 	fseek(tmp, 0, SEEK_SET);
 
-	fread(formatted, len, 1, tmp);
-
-	string_builder_append(sb, formatted, err);
-	if(*err) goto RET;
-
-RET:
-	free(formatted);
-	fclose(tmp);
-}
-
-void string_builder_append_va(
-	StringBuilder *sb,
-	Error *err,
-	...
-)
-{
-	va_list args;
-	va_start(args, err);
-
-	const char *str = NULL;
-	while((str = va_arg(args, const char *)) != NULL) {
-		string_builder_append(sb, str, err);
-		if(*err) goto RET;
+	if(!fread(sb->str + sb->count - len, len, 1, tmp)) {
+		fprintf(stderr, "[ERROR] UNABLE TO READ FROM TEMPORARY FILE\n");
+		*err = ERROR_IO;
+		goto RET;
 	}
+	sb->str[sb->count - 1] = '\0';
 
 RET:
-	va_end(args);
+	fclose(tmp);
 }

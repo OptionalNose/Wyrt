@@ -48,7 +48,7 @@ void lexer_clean(Lexer *lex)
 void lexer_clean_identifiers(char **identifiers, size_t identifier_count)
 {
 	if(!identifiers) return;
-	for(size_t i = 3; i < identifier_count - 1; i++) {
+	for(size_t i = 2; i < identifier_count; i++) {
 		free(identifiers[i]);
 	}
 	free(identifiers);
@@ -123,8 +123,6 @@ void lexer_tokenize(
 	dynarr_push(&idents, &(char *){"u8"}, err);
 	if(*err) goto RET;
 	dynarr_push(&idents, &(char *){"void"}, err);
-	if(*err) goto RET;
-	dynarr_push(&idents, &(char *){"main"}, err);
 	if(*err) goto RET;
 	
 	size_t pos = 0;
@@ -256,7 +254,10 @@ void lexer_tokenize(
 			}
 			if(!found) {
 				id = idents.count;
-				dynarr_push(&idents, &string_builder.data, err);
+				char *identifier = malloc(string_builder.count + 1);
+				CHECK_MALLOC(identifier);
+				strcpy(identifier, string_builder.data);
+				dynarr_push(&idents, &identifier, err);
 				if(*err) goto RET;
 			}
 

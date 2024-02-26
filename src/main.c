@@ -95,6 +95,7 @@ int main(int argc, char **argv)
 
 			sscanf(argv[i], "--ir-dump=%s", path);
 			options.ir_dump_file = path;
+			printf("INFO: IR dump to '%s'\n", path);
 		} else if (sscanf(argv[i], "-c%c", &garbage)) {
 			options.compile_only = true;
 		} else if(sscanf(argv[i], "-o%c", &garbage)) {

@@ -117,7 +117,14 @@ void string_builder_printf(
 	
 	long len = ftell(tmp);
 
-	sb->count += len;
+	bool empty = !sb->count;
+
+	if(!empty) {
+		sb->count += len;
+	} else {
+		sb->count += len + 1;
+	}
+	
 
 	if(sb->count >= sb->capacity) {
 		sb->str = realloc(sb->str, sb->count * 2);
@@ -126,11 +133,21 @@ void string_builder_printf(
 
 	fseek(tmp, 0, SEEK_SET);
 
-	if(!fread(sb->str + sb->count - len, len, 1, tmp)) {
-		fprintf(stderr, "[ERROR] UNABLE TO READ FROM TEMPORARY FILE\n");
-		*err = ERROR_IO;
-		goto RET;
+	
+	if(empty) {
+		if(!fread(sb->str, len, 1, tmp)) {
+			fprintf(stderr, "[ERROR] UNABLE TO READ FROM TEMPORARY FILE\n");
+			*err = ERROR_IO;
+			goto RET;
+		}
+	} else {
+		if(!fread(sb->str + sb->count - len - 1, len, 1, tmp)) {
+			fprintf(stderr, "[ERROR] UNABLE TO READ FROM TEMPORARY FILE\n");
+			*err = ERROR_IO;
+			goto RET;
+		}
 	}
+	
 	sb->str[sb->count - 1] = '\0';
 
 RET:

@@ -10,3 +10,7 @@ Specification.toc
 Specification.pdf
 a.out
 a.o
+test/*.o
+tokens
+ast
+ir

@@ -43,14 +43,15 @@ typedef struct {
 } DynArr;
 
 void dynarr_init(DynArr *da, size_t elem_size);
-void dynarr_clean(DynArr *da);
+void dynarr_clean(DynArr const *da);
 
 void dynarr_alloc(DynArr *da, size_t count, Error *e);
 void dynarr_shrink(DynArr *da, Error *e);
-void *dynarr_at(DynArr *da, size_t index);
-void *dynarr_from_back(DynArr *da, size_t from_back);
-void dynarr_push(DynArr *da, void *val, Error *e);
-void dynarr_pop(DynArr *da, void *val);
+void *dynarr_at(DynArr const *da, size_t index);
+void *dynarr_from_back(DynArr const *da, size_t from_back);
+void dynarr_push(DynArr *da, void const *val, Error *e);
+void *dynarr_pop(DynArr *da);
+void dynarr_append(DynArr *da, void const *vals, size_t count, Error *err);
 
 typedef struct {
 	char *str;

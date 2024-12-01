@@ -15,6 +15,18 @@ typedef struct {
 	bool compile_only;
 } CmdlineOptions;
 
+int match_arg(const char *query, const char *arg)
+{
+	int i = 0;
+	while(*query && *arg) {
+		if(*query != *arg) return 0;
+		query += 1;
+		arg += 1;
+		i += 1;
+	}
+	return i;
+}
+
 int main(int argc, char **argv)
 {
 	CmdlineOptions options = { 0 };
@@ -31,15 +43,18 @@ int main(int argc, char **argv)
 	Lexer lexer = { 0 };
 	CodeGen codegen = { 0 };
 	
+	StringBuilder compile = { 0 };
+	StringBuilder link = { 0 };
+
+	FILE *ir_file = NULL;
+
 	for(int i = 1; i < argc; i++) {
 		int string_length = 0;
 		char garbage;
-		if(
-			sscanf(argv[i], "-h%c", &garbage)
-			|| sscanf(argv[i], "--help%c", &garbage)
-		) {
+		if(match_arg("--help", argv[i]) || match_arg("-h", argv[i])) {
 			printf(
-				"Usage: wyrt [options] file\n"
+				"Usage: wyrt [OPTIONS] file\n"
+				"\n"
 				"Options:\n"
 				"\t--token-dump=<path>\t\t\t\tDump Lexed Tokens into file <path>\n"
 				"\t--ast-dump=<path>\t\t\t\tDump Parsed AST Nodes into file <path>\n"
@@ -47,80 +62,23 @@ int main(int argc, char **argv)
 				"\t-c\t\t\t\t\t\tCompile Only, do not link\n"
 				"\t-o <path>\t\t\t\t\tOutput to <path>\n"
 			);
+			fflush(stdout);
 			goto RET;
-		} else if(sscanf(argv[i], "--token-dump=%c", &garbage)) {
-			sscanf(argv[i], "--token-dump=%*s%n", &string_length);
-			if(string_length == 0) {
-				err = ERROR_UNEXPECTED_DATA;
-				fprintf(stderr, "Expected File Path.\n");
-				goto RET;
-			}
-			char *path = malloc(string_length + 1);
-			if(!path) {
-				err = ERROR_OUT_OF_MEMORY;
-				goto RET;
-			}
-
-			sscanf(argv[i], "--token-dump=%s", path);
-			options.token_dump_file = path;
-			printf("INFO: token dump to '%s'\n", path);
-		} else if(sscanf(argv[i], "--ast-dump=%c", &garbage)) {
-			sscanf(argv[i], "--ast-dump=%*s%n", &string_length);
-			if(string_length == 0) {
-				err = ERROR_UNEXPECTED_DATA;
-				fprintf(stderr, "Expected File Path.\n");
-				goto RET;
-			}
-			char *path = malloc(string_length + 1);
-			if(!path) {
-				err = ERROR_OUT_OF_MEMORY;
-				goto RET;
-			}
-
-			sscanf(argv[i], "--ast-dump=%s", path);
-			options.ast_dump_file = path;
-			printf("INFO: AST dump to '%s'\n", path);
-		} else if(sscanf(argv[i], "--ir-dump=%c", &garbage)) {
-			sscanf(argv[i], "--ir-dump=%*s%n", &string_length);
-						if(string_length == 0) {
-				err = ERROR_UNEXPECTED_DATA;
-				fprintf(stderr, "Expected File Path.\n");
-				goto RET;
-			}
-			char *path = malloc(string_length + 1);
-			if(!path) {
-				err = ERROR_OUT_OF_MEMORY;
-				goto RET;
-			}
-
-			sscanf(argv[i], "--ir-dump=%s", path);
-			options.ir_dump_file = path;
-			printf("INFO: IR dump to '%s'\n", path);
-		} else if (sscanf(argv[i], "-c%c", &garbage)) {
+		} else if(match_arg("--token-dump=", argv[i])) {
+			options.token_dump_file = match_arg("--token-dump=", argv[i]) + argv[i];
+		} else if(match_arg("--ast-dump=", argv[i])) {
+			options.ast_dump_file = match_arg("--ast-dump=", argv[i]) + argv[i];
+		} else if(match_arg("--ir-dump=", argv[i])) {
+			options.ir_dump_file = match_arg("--ir-dump=", argv[i]) + argv[i];
+		} else if(match_arg("-c", argv[i])) {
 			options.compile_only = true;
-		} else if(sscanf(argv[i], "-o%c", &garbage)) {
-			i += 1;
-			if(i > argc) {
-				fprintf(stderr, "Expected Output File.\n");
+		} else if(match_arg("-o", argv[i])) {
+			if(i + 1 >= argc) {
+				fprintf(stderr, "No output file provided to '-o'.\n");
 				err = ERROR_UNEXPECTED_DATA;
 				goto RET;
 			}
-
-			sscanf(argv[i], "%*s%n", &string_length);
-			if(string_length == 0) {
-				fprintf(stderr, "Expected Output File.\n");
-				err = ERROR_UNEXPECTED_DATA;
-				goto RET;
-			}
-			
-			char *path = malloc(string_length + 1);
-			if(!path) {
-				err = ERROR_OUT_OF_MEMORY;
-				goto RET;
-			}
-
-			sscanf(argv[i], "%s", path);
-			options.output_file = path;
+			options.output_file = argv[i + 1];
 		} else if(sscanf(argv[i], "%*1[^-]%c", &garbage)) {
 			sscanf(argv[i], "%*1[^-]%*s%n", &string_length);
 			char *path = malloc(string_length + 1);
@@ -196,23 +154,33 @@ int main(int argc, char **argv)
 			file,
 			nodes, node_count, identifiers
 		);
+
+		fclose(file);
 	}
 
-	char *ir_file;
+	char *ir_file_path;
 	char _ir_tmpnam[L_tmpnam];
 	if(options.ir_dump_file) {
-		ir_file = options.ir_dump_file;
+		ir_file_path = options.ir_dump_file;
 	} else {
 		tmpnam(_ir_tmpnam);
-		ir_file = _ir_tmpnam;
+		ir_file_path = _ir_tmpnam;
+	}
+	
+	ir_file = fopen(ir_file_path, "wb");
+	if(!ir_file) {
+		fprintf(stderr, "Error Creating File for LLVM IR!\n");
+		err = ERROR_IO;
+		goto RET;
 	}
 
-	codegen_init(&codegen);
+	codegen_init(&codegen, ir_file, nodes, node_count, identifiers);
 
-	codegen_gen(
-		&codegen, nodes, node_count, identifiers, ir_file, &err
-	);
+	codegen_gen(&codegen, &err);
 	if(err) goto RET;
+
+	fclose(ir_file);
+	ir_file = NULL;
 
 	char *obj_file;
 	char _obj_tmpnam[L_tmpnam];
@@ -223,19 +191,17 @@ int main(int argc, char **argv)
 		obj_file = _obj_tmpnam;
 	}
 
-	StringBuilder compile = { 0 };
 	string_builder_printf(
 		&compile, &err, "clang -Wno-override-module -c -x ir %s -o %s",
-		ir_file, obj_file
+		ir_file_path, obj_file
 	);
 	if(err) goto RET;
 
 	system(compile.str);
 
-	if(!options.ir_dump_file) remove(ir_file);
+	if(!options.ir_dump_file) remove(ir_file_path);
 
 	
-	StringBuilder link = { 0 };
 	if(!options.compile_only) {
 		char *output_file;
 		if(options.output_file) {
@@ -256,17 +222,14 @@ int main(int argc, char **argv)
 	}
 	
 RET:
-	free(link.str);
-	free(compile.str);
-	free(options.output_file);
-	free(options.src_file);
-	free(options.token_dump_file);
-	free(options.ast_dump_file);
-	free(options.ir_dump_file);
+	if(options.src_file) free(options.src_file);
+	if(ir_file) fclose(ir_file);
+	if(link.str) free(link.str);
+	if(compile.str) free(compile.str);
 	lexer_clean(&lexer);
 	lexer_clean_identifiers(identifiers, identifier_count);
-	parser_clean_ast(nodes, node_count);
-	free(nodes);
-	free(tokens);
+	if(nodes) parser_clean_ast(nodes, node_count);
+	if(nodes) free(nodes);
+	if(tokens) free(tokens);
 	return err;
 }

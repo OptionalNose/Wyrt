@@ -42,7 +42,7 @@ RET:
 
 void lexer_clean(Lexer *lex)
 {
-	free(lex->file_contents);
+	if(lex->file_contents) free(lex->file_contents);
 }
 
 void lexer_clean_identifiers(char **identifiers, size_t identifier_count)
@@ -120,15 +120,16 @@ void lexer_tokenize(
 	dynarr_init(&toks, sizeof(Token));
 	dynarr_init(&idents, sizeof(char *));
 
+	size_t pos = 0;
+	uint32_t line = 1;
+	uint32_t col = 1;
+	uint32_t prev_col = 1;
+
 	dynarr_push(&idents, &(char *){"u8"}, err);
 	if(*err) goto RET;
 	dynarr_push(&idents, &(char *){"void"}, err);
 	if(*err) goto RET;
 	
-	size_t pos = 0;
-	uint32_t line = 1;
-	uint32_t col = 1;
-	uint32_t prev_col = 1;
 
 	DynArr string_builder;
 	dynarr_init(&string_builder, sizeof(char));
@@ -174,6 +175,19 @@ void lexer_tokenize(
 		case ';':
 			tok.type = TOKEN_SEMICOLON;
 			goto NEXT_TOK;
+		case '*':
+			tok.type = TOKEN_STAR;
+			goto NEXT_TOK;
+		case '/':
+			tok.type = TOKEN_FSLASH;
+			goto NEXT_TOK;
+		case '+':
+			tok.type = TOKEN_PLUS;
+			goto NEXT_TOK;
+		case '-':
+			c = get_char(lex, &pos, &line, &col, &prev_col);
+			tok.type = TOKEN_MINUS;
+			goto NEXT_TOK;			
 		default:
 			break;
 		}
@@ -182,7 +196,7 @@ void lexer_tokenize(
 			intmax_t val = *(char *)dynarr_at(&string_builder, 0) - '0';
 			while(
 				isdigit(
-					c = skip_whitespace(lex, &pos, &line, &col, &prev_col)
+					c = get_char(lex, &pos, &line, &col, &prev_col)
 				)
 			) {
 				val *= 10;
@@ -211,33 +225,20 @@ void lexer_tokenize(
 			) {
 				dynarr_push(&string_builder, &c, err);
 				if(*err) goto RET;
-
-				c = get_char(lex, &pos, &line, &col, &prev_col);
-				
-				if(
-					string_builder.count == strlen("const")
-					&& !memcmp(
-						string_builder.data, "const", strlen("const")
-					)
-					&& isspace(c)
-				) {
-					tok.type = TOKEN_CONST;
-					goto NEXT_TOK;
-				} else if(
-					string_builder.count == strlen("return")
-					&& !memcmp(
-						string_builder.data, "return", strlen("return")
-					)
-					&& isspace(c)
-				) {
-					tok.type = TOKEN_RETURN;
-					goto NEXT_TOK;
-				}
-
-				backup(lex, &pos, &line, &col, prev_col);
 			}
 			dynarr_push(&string_builder, &(char){'\0'}, err);
 			if(*err) goto RET;
+
+			if(strcmp(string_builder.data, "return") == 0) {
+				tok.type = TOKEN_RETURN;
+				goto NEXT_TOK;
+			} else if(strcmp(string_builder.data, "const") == 0) {
+				tok.type = TOKEN_CONST;
+				goto NEXT_TOK;
+			} else if(strcmp(string_builder.data, "fn") == 0) {
+				tok.type = TOKEN_FN;
+				goto NEXT_TOK;
+			}
 
 			bool found = false;
 			size_t id;
@@ -275,20 +276,6 @@ void lexer_tokenize(
 		}
 		dynarr_push(&string_builder, &c, err);
 
-		if(memcmp(string_builder.data, "->", 2)) {
-			fprintf(
-				stderr,
-				"Invalid Token '%c%c' at ",
-				*(char *)dynarr_at(&string_builder, 0),
-				*(char *)dynarr_at(&string_builder, 1)
-			);
-			lexer_print_debug_to_file(stderr, &tok.debug.debug_info);
-			fputc('\n', stderr);
-			*err = ERROR_UNEXPECTED_DATA;
-			goto RET;
-		}
-
-		tok.type = TOKEN_ARROW;	
 		
 NEXT_TOK:
 		dynarr_push(&toks, &tok, err);
@@ -353,14 +340,14 @@ void lexer_print_token_to_file(
 	case TOKEN_SEMICOLON:
 		fputs(";", file);
 		break;
-	case TOKEN_ARROW:
-		fputs("->", file);
-		break;
 	case TOKEN_RETURN:
 		fputs("return", file);
 		break;
 	case TOKEN_CONST:
 		fputs("const", file);
+		break;
+	case TOKEN_FN:
+		fputs("fn", file);
 		break;
 	case TOKEN_IDENT:
 		fprintf(
@@ -371,6 +358,18 @@ void lexer_print_token_to_file(
 		break;
 	case TOKEN_INT_LIT:
 		fprintf(file, "Int '%ji'", tok->int_lit.val);
+		break;
+	case TOKEN_STAR:
+		fprintf(file, "'*'");
+		break;
+	case TOKEN_FSLASH:
+		fprintf(file, "'/'");
+		break;
+	case TOKEN_PLUS:
+		fprintf(file, "'+'");
+		break;
+	case TOKEN_MINUS:
+		fprintf(file, "'-'");
 		break;
 	}
 	

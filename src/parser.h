@@ -5,13 +5,18 @@
 typedef enum {
 	AST_NONE,
 	AST_MODULE,
-	AST_DECL,
+	AST_FN_DEF,
 	AST_FN_TYPE,
 	AST_CONST,
 	AST_IDENT,
 	AST_BLOCK,
 	AST_RET,
 	AST_INT_LIT,
+
+	AST_MUL,
+	AST_DIV,
+	AST_ADD,
+	AST_SUB
 } AstNodeType;
 
 typedef union {
@@ -25,11 +30,10 @@ typedef union {
 	struct {
 		AstNodeType type;
 		DebugInfo debug_info;
-		size_t access;
 		size_t ident;
-		size_t data_type;
-	 	size_t initial; // 0 == NONE
-	} decl;
+		size_t fn_type;
+		size_t block;
+	} fn_def;
 
 	struct {
 		AstNodeType type;
@@ -42,7 +46,7 @@ typedef union {
 	struct {
 		AstNodeType type;
 		DebugInfo debug_info;
-		size_t *statements; // (arg, type)
+		size_t *statements; 
 		size_t statement_count;
 	} block;
 
@@ -70,6 +74,13 @@ typedef union {
 		size_t *statements;
 		size_t statement_count;
 	} module;
+
+	struct {
+		AstNodeType type;
+		DebugInfo debug_info;
+		size_t lhs;
+		size_t rhs;
+	} binop;
 	
 } AstNode;
 

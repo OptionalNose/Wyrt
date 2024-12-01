@@ -9,7 +9,7 @@ void dynarr_init(DynArr *da, size_t elem_size)
 		.elem_size = elem_size
 	};
 }
-void dynarr_clean(DynArr *da)
+void dynarr_clean(DynArr const *da)
 {
 	free(da->data);
 }
@@ -35,7 +35,7 @@ RET:
 	return;
 }
 
-void *dynarr_at(DynArr *da, size_t index)
+void *dynarr_at(DynArr const *da, size_t index)
 {
 	if(da->data)
 		return &((char*)da->data)[da->elem_size * index];
@@ -43,14 +43,14 @@ void *dynarr_at(DynArr *da, size_t index)
 }
 
 
-void *dynarr_from_back(DynArr *da, size_t from_back)
+void *dynarr_from_back(DynArr const *da, size_t from_back)
 {
-	if(da->data)
+	if(da->data && da->count)
 		return &((char*)da->data)[da->elem_size * (da->count - from_back - 1)];
 	else return NULL;
 }
 
-void dynarr_push(DynArr *da, void *val, Error *err)
+void dynarr_push(DynArr *da, void const *val, Error *err)
 {
 	dynarr_alloc(da, 1, err);
 	if(*err) goto RET;
@@ -60,22 +60,28 @@ void dynarr_push(DynArr *da, void *val, Error *err)
 RET:
 	return;	
 }
-void dynarr_pop(DynArr *da, void *val)
+void *dynarr_pop(DynArr *da)
 {
-	memcpy(val, dynarr_from_back(da, 0), da->elem_size);
+	void *top = dynarr_from_back(da, 0);
 	da->count--;
+	return top;
 }
 
+void dynarr_append(DynArr *da, void const *vals, size_t count, Error *err)
+{
+	dynarr_alloc(da, count, err);
+	if(*err) goto RET;
+
+	for(size_t i = count - 1; i >= 0; i--) {
+		memcpy(dynarr_from_back(da, i), &vals[i], da->elem_size);
+	}
+
+RET:
+	return;
+}
 
 void string_builder_append(StringBuilder *sb, const char *str, Error *err)
 {
-	DynArr raw = {
-		.data = sb->str,
-		.elem_size = sizeof(char),
-		.count = sb->count > 0 ? sb->count - 1 : 0,
-		.capacity = sb->capacity
-	};
-
 	size_t len = strlen(str);
 
 	sb->count += len;

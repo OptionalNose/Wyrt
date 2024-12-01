@@ -1,5 +1,4 @@
-#pragma once
-
+#pragma once 
 #include "util.h"
 
 typedef enum {
@@ -18,13 +17,18 @@ typedef enum {
 
 	TOKEN_SEMICOLON,
 
-	TOKEN_ARROW,
 	TOKEN_RETURN,
 	
 	TOKEN_CONST,
+	TOKEN_FN,
 	
 	TOKEN_IDENT,
 	TOKEN_INT_LIT,
+
+	TOKEN_STAR,
+	TOKEN_FSLASH,
+	TOKEN_PLUS,
+	TOKEN_MINUS
 } TokenType;
 
 typedef struct {

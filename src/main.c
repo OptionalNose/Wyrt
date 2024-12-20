@@ -10,7 +10,7 @@ typedef struct {
 	char *src_file;
 	char *token_dump_file; // NULL == Do not dump
 	char *ast_dump_file;
-	char *ir_dump_file;
+	char *asm_dump_file;
 	char *output_file;
 	bool compile_only;
 } CmdlineOptions;
@@ -46,7 +46,7 @@ int main(int argc, char **argv)
 	StringBuilder compile = { 0 };
 	StringBuilder link = { 0 };
 
-	FILE *ir_file = NULL;
+	FILE *asm_file = NULL;
 
 	for(int i = 1; i < argc; i++) {
 		int string_length = 0;
@@ -58,7 +58,7 @@ int main(int argc, char **argv)
 				"Options:\n"
 				"\t--token-dump=<path>\t\t\t\tDump Lexed Tokens into file <path>\n"
 				"\t--ast-dump=<path>\t\t\t\tDump Parsed AST Nodes into file <path>\n"
-				"\t--ir-dump=<path>\t\t\t\tDump LLVM IR into file <path>\n"
+				"\t--asm-dump=<path>\t\t\t\tDump Assembly into file <path>\n"
 				"\t-c\t\t\t\t\t\tCompile Only, do not link\n"
 				"\t-o <path>\t\t\t\t\tOutput to <path>\n"
 			);
@@ -68,8 +68,8 @@ int main(int argc, char **argv)
 			options.token_dump_file = match_arg("--token-dump=", argv[i]) + argv[i];
 		} else if(match_arg("--ast-dump=", argv[i])) {
 			options.ast_dump_file = match_arg("--ast-dump=", argv[i]) + argv[i];
-		} else if(match_arg("--ir-dump=", argv[i])) {
-			options.ir_dump_file = match_arg("--ir-dump=", argv[i]) + argv[i];
+		} else if(match_arg("--asm-dump=", argv[i])) {
+			options.asm_dump_file = match_arg("--asm-dump=", argv[i]) + argv[i];
 		} else if(match_arg("-c", argv[i])) {
 			options.compile_only = true;
 		} else if(match_arg("-o", argv[i])) {
@@ -158,29 +158,29 @@ int main(int argc, char **argv)
 		fclose(file);
 	}
 
-	char *ir_file_path;
-	char _ir_tmpnam[L_tmpnam];
-	if(options.ir_dump_file) {
-		ir_file_path = options.ir_dump_file;
+	char *asm_file_path;
+	char _asm_tmpnam[L_tmpnam];
+	if(options.asm_dump_file) {
+		asm_file_path = options.asm_dump_file;
 	} else {
-		tmpnam(_ir_tmpnam);
-		ir_file_path = _ir_tmpnam;
+		tmpnam(_asm_tmpnam);
+		asm_file_path = _asm_tmpnam;
 	}
 	
-	ir_file = fopen(ir_file_path, "wb");
-	if(!ir_file) {
+	asm_file = fopen(asm_file_path, "wb");
+	if(!asm_file) {
 		fprintf(stderr, "Error Creating File for LLVM IR!\n");
 		err = ERROR_IO;
 		goto RET;
 	}
 
-	codegen_init(&codegen, ir_file, nodes, node_count, identifiers);
+	codegen_init(&codegen, asm_file, nodes, node_count, identifiers);
 
-	codegen_gen(&codegen, &err);
+	codegen_gen(&codegen, !options.compile_only, &err);
 	if(err) goto RET;
 
-	fclose(ir_file);
-	ir_file = NULL;
+	fclose(asm_file);
+	asm_file = NULL;
 
 	char *obj_file;
 	char _obj_tmpnam[L_tmpnam];
@@ -192,15 +192,14 @@ int main(int argc, char **argv)
 	}
 
 	string_builder_printf(
-		&compile, &err, "clang -Wno-override-module -c -x ir %s -o %s",
-		ir_file_path, obj_file
+		&compile, &err, "nasm %s -felf64 -o %s",
+		asm_file_path, obj_file
 	);
 	if(err) goto RET;
 
 	system(compile.str);
 
-	if(!options.ir_dump_file) remove(ir_file_path);
-
+	if(!options.asm_dump_file) remove(asm_file_path);
 	
 	if(!options.compile_only) {
 		char *output_file;
@@ -211,7 +210,7 @@ int main(int argc, char **argv)
 		}
 	
 		string_builder_printf(
-			&link, &err, "clang -o %s %s",
+			&link, &err, "ld -o %s %s",
 			output_file, obj_file
 		);
 		if(err) goto RET;
@@ -223,7 +222,7 @@ int main(int argc, char **argv)
 	
 RET:
 	if(options.src_file) free(options.src_file);
-	if(ir_file) fclose(ir_file);
+	if(asm_file) fclose(asm_file);
 	if(link.str) free(link.str);
 	if(compile.str) free(compile.str);
 	lexer_clean(&lexer);

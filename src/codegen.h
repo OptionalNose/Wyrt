@@ -8,9 +8,6 @@ typedef struct {
 	const AstNode *nodes;
 	size_t node_count;
 	char *const *identifiers;
-
-	uintmax_t md_counter;
-	uintmax_t ssa_counter;
 } CodeGen;
 
 void codegen_init(
@@ -21,4 +18,4 @@ void codegen_init(
 		char *const *identifiers
 );
 
-void codegen_gen(CodeGen *cg, Error *err);
+void codegen_gen(CodeGen *cg, bool exec, Error *err);

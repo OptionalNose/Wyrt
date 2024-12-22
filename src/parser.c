@@ -186,6 +186,23 @@ static void parse_expr(
 			if(*err) goto RET;
 			break;
 
+		case TOKEN_IDENT:
+			dynarr_push(
+				nodes,
+				&(AstNode) {
+					.ident = {
+						.type = AST_IDENT,
+						.debug_info = tokens[*index].debug.debug_info,
+						.id = tokens[*index].ident.id,
+					},
+				},
+				err
+			);
+			if(*err) goto RET;
+			dynarr_push(&free_terms, &(size_t) {nodes->count - 1}, err);
+			if(*err) goto RET;
+			break;
+
 		case TOKEN_SEMICOLON:
 			terminated = true;
 			*index -= 2;
@@ -282,6 +299,82 @@ static void parse_block(
 			if(*err) goto RET;
 
 			break;
+
+		case TOKEN_CONST:
+			*index += 1;
+
+			if(tokens[*index].type != TOKEN_IDENT) {
+				fprintf(stderr, "Expected Identifier, found ");
+				lexer_print_token_to_file(stderr, &tokens[*index], identifiers);
+				fprintf(stderr, "\n");
+				*err = ERROR_UNEXPECTED_DATA;
+				goto RET;
+			}
+
+			size_t id = tokens[*index].ident.id;
+			
+			*index += 1;
+
+			if(tokens[*index].type != TOKEN_COLON) {
+				fprintf(stderr, "Expected ':', found ");
+				lexer_print_token_to_file(stderr, &tokens[*index], identifiers);
+				fprintf(stderr, "\n");
+				*err = ERROR_UNEXPECTED_DATA;
+				goto RET;
+			}
+
+			*index += 1;
+
+			if(tokens[*index].type != TOKEN_IDENT) {
+				fprintf(stderr, "Expected Identifier, found ");
+				lexer_print_token_to_file(stderr, &tokens[*index], identifiers);
+				fprintf(stderr, "\n");
+				*err = ERROR_UNEXPECTED_DATA;
+				goto RET;
+			}
+
+			dynarr_push(
+				nodes,
+				&(AstNode) {
+					.ident = {
+						.type = AST_IDENT,
+						.debug_info = tokens[*index].debug.debug_info,
+						.id = tokens[*index].ident.id,
+					},
+				},
+				err
+			);
+			if(*err) goto RET;
+
+			size_t data_type = nodes->count - 1; 
+
+			size_t initial = 0;
+			if(tokens[*index + 1].type == TOKEN_ASSIGN) {
+				*index += 2;
+				parse_expr(tokens, token_count, index, nodes, identifiers, err);
+				if(*err) goto RET;
+
+				initial = nodes->count - 1;
+			}
+
+			dynarr_push(
+				nodes,
+				&(AstNode) {
+					.var_decl = {
+						.type = AST_VAR_DECL,
+						.debug_info = debug,
+						.mut = false,
+						.id = id,
+						.data_type = data_type,
+						.initial = initial,
+					},
+				},
+				err
+			);
+			if(*err) goto RET;
+
+			break;
+
 		default:
 			fprintf(stderr, "Unexpected ");
 			lexer_print_token_to_file(stderr, &tokens[*index], identifiers);
@@ -560,7 +653,6 @@ void parser_clean_ast(AstNode *nodes, size_t node_count)
 		
 		case AST_NONE:
 		case AST_FN_DEF:
-		case AST_CONST:
 		case AST_IDENT:
 		case AST_RET:
 		case AST_INT_LIT:
@@ -568,6 +660,7 @@ void parser_clean_ast(AstNode *nodes, size_t node_count)
 		case AST_DIV:
 		case AST_ADD:
 		case AST_SUB:
+		case AST_VAR_DECL:
 			break;
 		}
 	}
@@ -605,10 +698,6 @@ void parser_print_ast_to_file(
 				);
 			}
 			fprintf(file, ") -> %zi", nodes[i].fn_type.ret_type);
-			break;
-			
-		case AST_CONST:
-			fprintf(file, "CONST");
 			break;
 			
 		case AST_BLOCK:
@@ -657,6 +746,17 @@ void parser_print_ast_to_file(
 			break;
 		case AST_SUB:
 			fprintf(file, "%zi - %zi", nodes[i].binop.lhs, nodes[i].binop.rhs);
+			break;
+
+		case AST_VAR_DECL:
+			fprintf(
+				file,
+				"%s '%s': %ji [= %ji]", 
+				nodes[i].var_decl.mut ? "var" : "const",
+				identifiers[nodes[i].var_decl.id],
+				nodes[i].var_decl.data_type,
+				nodes[i].var_decl.initial
+			);
 			break;
 		}
 		fprintf(file, "\n");

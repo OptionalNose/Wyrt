@@ -7,7 +7,6 @@ typedef enum {
 	AST_MODULE,
 	AST_FN_DEF,
 	AST_FN_TYPE,
-	AST_CONST,
 	AST_IDENT,
 	AST_BLOCK,
 	AST_RET,
@@ -16,7 +15,9 @@ typedef enum {
 	AST_MUL,
 	AST_DIV,
 	AST_ADD,
-	AST_SUB
+	AST_SUB,
+
+	AST_VAR_DECL,
 } AstNodeType;
 
 typedef union {
@@ -82,6 +83,14 @@ typedef union {
 		size_t rhs;
 	} binop;
 	
+	struct {
+		AstNodeType type;
+		DebugInfo debug_info;
+		bool mut;
+		size_t id;
+		size_t data_type;
+		size_t initial; // 0 == none
+	} var_decl;
 } AstNode;
 
 void parser_gen_ast(

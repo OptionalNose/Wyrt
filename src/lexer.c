@@ -185,9 +185,11 @@ void lexer_tokenize(
 			tok.type = TOKEN_PLUS;
 			goto NEXT_TOK;
 		case '-':
-			c = get_char(lex, &pos, &line, &col, &prev_col);
 			tok.type = TOKEN_MINUS;
 			goto NEXT_TOK;			
+		case ',':
+			tok.type = TOKEN_COMMA;
+			goto NEXT_TOK;
 		default:
 			break;
 		}
@@ -370,6 +372,9 @@ void lexer_print_token_to_file(
 		break;
 	case TOKEN_MINUS:
 		fprintf(file, "'-'");
+		break;
+	case TOKEN_COMMA:
+		fprintf(file, "','");
 		break;
 	}
 	

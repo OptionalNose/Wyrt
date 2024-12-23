@@ -13,6 +13,7 @@ typedef enum {
 	ERROR_IO,
 	ERROR_UNEXPECTED_DATA,
 	ERROR_TODO,
+	ERROR_UNDEFINED,
 } Error;
 
 #ifdef NDEBUG

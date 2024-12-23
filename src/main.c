@@ -230,5 +230,6 @@ RET:
 	if(nodes) parser_clean_ast(nodes, node_count);
 	if(nodes) free(nodes);
 	if(tokens) free(tokens);
+	codegen_clean(&codegen);
 	return err;
 }

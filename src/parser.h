@@ -18,6 +18,8 @@ typedef enum {
 	AST_SUB,
 
 	AST_VAR_DECL,
+
+	AST_FN_CALL,
 } AstNodeType;
 
 typedef union {
@@ -91,6 +93,15 @@ typedef union {
 		size_t data_type;
 		size_t initial; // 0 == none
 	} var_decl;
+
+	struct {
+		AstNodeType type;
+		DebugInfo debug_info;
+		size_t fn_id;
+		size_t arg_count;
+		size_t *args;
+	} fn_call;
+
 } AstNode;
 
 void parser_gen_ast(

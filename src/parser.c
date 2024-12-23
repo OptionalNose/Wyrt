@@ -1,5 +1,69 @@
 #include "parser.h"
 
+static void parse_expr(
+	const Token *tokens, size_t token_count, size_t *index,
+	DynArr *nodes,
+	char *const *identifiers,
+	Error *err
+);
+
+static void parse_fn_call(
+	const Token *tokens, size_t token_count, size_t *index,
+	DynArr *nodes,
+	char *const *identifiers,
+	Error *err
+)
+{
+	DynArr args;
+	dynarr_init(&args, sizeof (size_t));
+
+	// all callers guarentee TokenType
+	size_t id = tokens[*index].ident.id;
+	DebugInfo debug = tokens[*index].debug.debug_info;
+
+	// skip LPAREN, all callers guarentee TokenType
+	*index += 2;
+
+	while(true) {
+		parse_expr(tokens, token_count, index, nodes, identifiers, err);
+		if(*err) goto RET;
+
+		*index += 1;
+
+		dynarr_push(&args, &(size_t) {nodes->count - 1}, err);
+		if(*err) goto RET;
+		
+		if(tokens[*index].type == TOKEN_RPAREN) break;
+
+		if(tokens[*index].type != TOKEN_COMMA) {
+			fprintf(stderr, "Expected ',', found ");
+			lexer_print_token_to_file(stderr, &tokens[*index], identifiers);
+			goto RET;
+		}
+
+		*index += 1;
+	}
+
+	dynarr_push(
+		nodes,
+		&(AstNode) {
+			.fn_call = {
+				.type = AST_FN_CALL,
+				.debug_info = debug,
+				.fn_id = id,
+				.arg_count = args.count,
+				.args = args.data,
+			},
+		},
+		err
+	);
+	if(*err) goto RET;
+
+RET:
+	if(*err) dynarr_clean(&args);
+	return;
+}
+
 static AstNodeType binop_tok_to_ast(TokenType type)
 {
 	switch(type) {
@@ -86,11 +150,9 @@ static void parse_expr(
 			}
 
 			if(!top) {
-				fprintf(stderr, "Too Many Close Parentheses in expression at ");
-				lexer_print_debug_to_file(stderr, &tokens[*index].debug.debug_info);
-				fprintf(stderr, "\n");
-				*err = ERROR_UNEXPECTED_DATA;
-				goto RET;
+				terminated = true;
+				*index -= 2;
+				break;
 			}
 
 			operator_stack.count -= 1;
@@ -187,23 +249,29 @@ static void parse_expr(
 			break;
 
 		case TOKEN_IDENT:
-			dynarr_push(
-				nodes,
-				&(AstNode) {
-					.ident = {
-						.type = AST_IDENT,
-						.debug_info = tokens[*index].debug.debug_info,
-						.id = tokens[*index].ident.id,
+			if(tokens[*index + 1].type == TOKEN_LPAREN) {
+				parse_fn_call(tokens, token_count, index, nodes, identifiers, err);
+				if(*err) goto RET;
+			} else {
+				dynarr_push(
+					nodes,
+					&(AstNode) {
+						.ident = {
+							.type = AST_IDENT,
+							.debug_info = tokens[*index].debug.debug_info,
+							.id = tokens[*index].ident.id,
+						},
 					},
-				},
-				err
-			);
-			if(*err) goto RET;
+					err
+				);
+				if(*err) goto RET;
+			}
 			dynarr_push(&free_terms, &(size_t) {nodes->count - 1}, err);
 			if(*err) goto RET;
 			break;
 
 		case TOKEN_SEMICOLON:
+		case TOKEN_COMMA:
 			terminated = true;
 			*index -= 2;
 			break;
@@ -263,7 +331,7 @@ static void parse_block(
 	dynarr_init(&statements, sizeof(size_t));
 
 	if(tokens[*index].type != TOKEN_LCURLY) {
-		fprintf(stderr, "Expected '{', found");
+		fprintf(stderr, "Expected '{', found ");
 		lexer_print_token_to_file(stderr, &tokens[*index], identifiers);
 		fprintf(stderr, " instead\n");
 		*err = ERROR_UNEXPECTED_DATA;
@@ -375,6 +443,30 @@ static void parse_block(
 
 			break;
 
+		case TOKEN_IDENT:
+			switch(tokens[*index + 1].type) {
+			case TOKEN_LPAREN:
+				parse_fn_call(tokens, token_count, index, nodes, identifiers, err);
+				if(*err) goto RET;
+				break;
+
+			case TOKEN_PLUS:
+			case TOKEN_MINUS:
+			case TOKEN_STAR:
+			case TOKEN_FSLASH:
+				fprintf(stderr, "Expected Statement, found Expression ");
+				lexer_print_token_to_file(stderr, &tokens[*index + 1], identifiers);
+				fprintf(stderr, "\n");
+				goto RET;
+
+			default:
+				fprintf(stderr, "Unexpected ");
+				lexer_print_token_to_file(stderr, &tokens[*index + 1], identifiers);
+				fprintf(stderr, "\n");
+				*err = ERROR_UNEXPECTED_DATA;
+				goto RET;
+			}
+
 		default:
 			fprintf(stderr, "Unexpected ");
 			lexer_print_token_to_file(stderr, &tokens[*index], identifiers);
@@ -423,6 +515,8 @@ static void parse_type(
 	Error *err
 )
 {
+	DynArr args;
+	dynarr_init(&args, 2 * sizeof(size_t));
 	DebugInfo location = tokens[*index].debug.debug_info;
 
 	switch(tokens[*index].type) {
@@ -442,12 +536,8 @@ static void parse_type(
 		break;
 		
 	case TOKEN_LPAREN:
-		do {} while (0);
-
-		DynArr args;
-		dynarr_init(&args, 2 * sizeof(size_t));
-
-		while(tokens[++*index].type != TOKEN_RPAREN) {
+		*index += 1;
+		while(tokens[*index].type != TOKEN_RPAREN) {
 			if(tokens[*index].type != TOKEN_IDENT) {
 				fprintf(stderr, "Error: Expected Identifier found ");
 				lexer_print_token_to_file(
@@ -476,6 +566,15 @@ static void parse_type(
 
 			*index += 1;
 
+			if(tokens[*index].type != TOKEN_COLON) {
+				fprintf(stderr, "Expected ':', found ");
+				lexer_print_token_to_file(stderr, &tokens[*index], identifiers);
+				*err = ERROR_UNEXPECTED_DATA;
+				goto RET;
+			}
+
+			*index += 1;
+
 			parse_type(
 				tokens, token_count, index, nodes, identifiers, err
 			);
@@ -485,6 +584,12 @@ static void parse_type(
 
 			dynarr_push(&args, &(size_t[2]) { name, data_type }, err);
 			if(*err) goto RET;
+
+			*index += 1;
+
+			if(tokens[*index].type == TOKEN_RPAREN) break;
+
+			*index += 1;
 		}
 
 
@@ -523,6 +628,7 @@ static void parse_type(
 		goto RET;
 	}
 RET:
+	if(*err) dynarr_clean(&args);
 	return;
 }
 
@@ -651,6 +757,10 @@ void parser_clean_ast(AstNode *nodes, size_t node_count)
 			free(nodes[i].module.statements);
 			break;
 		
+		case AST_FN_CALL:
+			free(nodes[i].fn_call.args);
+			break;
+
 		case AST_NONE:
 		case AST_FN_DEF:
 		case AST_IDENT:
@@ -758,6 +868,15 @@ void parser_print_ast_to_file(
 				nodes[i].var_decl.initial
 			);
 			break;
+
+		case AST_FN_CALL:
+			fprintf(file, "%s(", identifiers[nodes[i].fn_call.fn_id]);
+			for(size_t j = 0; j < nodes[i].fn_call.arg_count; j++) {
+				fprintf(file, "%ji, ", nodes[i].fn_call.args[j]);
+			}
+			fprintf(file, ")");
+			break;
+
 		}
 		fprintf(file, "\n");
 	}

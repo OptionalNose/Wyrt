@@ -28,7 +28,9 @@ typedef enum {
 	TOKEN_STAR,
 	TOKEN_FSLASH,
 	TOKEN_PLUS,
-	TOKEN_MINUS
+	TOKEN_MINUS,
+
+	TOKEN_COMMA
 } TokenType;
 
 typedef struct {

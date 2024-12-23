@@ -13,7 +13,7 @@ fn realloc(ptr: &const void, size: u32) &var void
 ```
 The idea is that the better the programmer can understand what a function does and it's requirements, the less likely they are to create bugs.
 
-It is called "wyrt" based off of the old-english word for "root".
+It is called "wyrt" based off of the old-english word for "root", because it encourages you to get 'down in the dirt'.
 It is _supposed_ to be pronounced "woo-rt", if you go by the original old-english.
 I find it easier to pronounce it "whir-t" or "wee-rt". 
 
@@ -58,3 +58,9 @@ The assembly it outputs uses the System V ABI Calling Convention.
 So as long as the `libc` you are using follows the System V ABI Calling Convention, it *should* work.
 
 ---
+
+## Known Issues
+The Makefile compiles a debug version of the compiler with Address and Undefined Santizers enabled.
+These Sanitizers sometimes get upset about the large stack-depths in the parser and segfault (:.
+Just run the compiler repeatedly and it should work eventually.
+Alternatively, you could also just run it inside a debugger, and that seems to keep the Sanitzers from crashing. 

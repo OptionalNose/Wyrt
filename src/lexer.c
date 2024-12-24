@@ -176,15 +176,39 @@ void lexer_tokenize(
 			tok.type = TOKEN_SEMICOLON;
 			goto NEXT_TOK;
 		case '*':
+			c = get_char(lex, &pos, &line, &col, &prev_col);
+			if(c == '=') {
+				tok.type = TOKEN_MUL_ASSIGN;
+				goto NEXT_TOK;
+			}
+			backup(lex, &pos, &line, &col, prev_col);
 			tok.type = TOKEN_STAR;
 			goto NEXT_TOK;
 		case '/':
+			c = get_char(lex, &pos, &line, &col, &prev_col);
+			if(c == '=') {
+				tok.type = TOKEN_DIV_ASSIGN;
+				goto NEXT_TOK;
+			}
+			backup(lex, &pos, &line, &col, prev_col);
 			tok.type = TOKEN_FSLASH;
 			goto NEXT_TOK;
 		case '+':
+			c = get_char(lex, &pos, &line, &col, &prev_col);
+			if(c == '=') {
+				tok.type = TOKEN_ADD_ASSIGN;
+				goto NEXT_TOK;
+			}
+			backup(lex, &pos, &line, &col, prev_col);
 			tok.type = TOKEN_PLUS;
 			goto NEXT_TOK;
 		case '-':
+			c = get_char(lex, &pos, &line, &col, &prev_col);
+			if(c == '=') {
+				tok.type = TOKEN_SUB_ASSIGN;
+				goto NEXT_TOK;
+			}
+			backup(lex, &pos, &line, &col, prev_col);
 			tok.type = TOKEN_MINUS;
 			goto NEXT_TOK;			
 		case ',':
@@ -239,6 +263,9 @@ void lexer_tokenize(
 				goto NEXT_TOK;
 			} else if(strcmp(string_builder.data, "fn") == 0) {
 				tok.type = TOKEN_FN;
+				goto NEXT_TOK;
+			} else if(strcmp(string_builder.data, "var") == 0) {
+				tok.type = TOKEN_VAR;
 				goto NEXT_TOK;
 			}
 
@@ -333,6 +360,18 @@ void lexer_print_token_to_file(
 	case TOKEN_ASSIGN:
 		fputs("=", file);
 		break;
+	case TOKEN_ADD_ASSIGN:
+		fputs("+=", file);
+		break;
+	case TOKEN_MUL_ASSIGN:
+		fputs("*=", file);
+		break;
+	case TOKEN_SUB_ASSIGN:
+		fputs("-=", file);
+		break;
+	case TOKEN_DIV_ASSIGN:
+		fputs("/=", file);
+		break;
 	case TOKEN_LCURLY:
 		fputs("{", file);
 		break;
@@ -350,6 +389,9 @@ void lexer_print_token_to_file(
 		break;
 	case TOKEN_FN:
 		fputs("fn", file);
+		break;
+	case TOKEN_VAR:
+		fputs("var", file);
 		break;
 	case TOKEN_IDENT:
 		fprintf(

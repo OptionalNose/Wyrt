@@ -369,6 +369,9 @@ static void parse_block(
 			break;
 
 		case TOKEN_CONST:
+		case TOKEN_VAR:
+			do {} while(0);
+			bool mut = (tokens[*index].type == TOKEN_VAR);
 			*index += 1;
 
 			if(tokens[*index].type != TOKEN_IDENT) {
@@ -431,7 +434,7 @@ static void parse_block(
 					.var_decl = {
 						.type = AST_VAR_DECL,
 						.debug_info = debug,
-						.mut = false,
+						.mut = mut,
 						.id = id,
 						.data_type = data_type,
 						.initial = initial,
@@ -450,6 +453,71 @@ static void parse_block(
 				if(*err) goto RET;
 				break;
 
+			case TOKEN_ASSIGN:
+			case TOKEN_ADD_ASSIGN:
+			case TOKEN_SUB_ASSIGN:
+			case TOKEN_MUL_ASSIGN:
+			case TOKEN_DIV_ASSIGN:
+				do {} while(0);
+
+				AstNodeType type;
+				switch(tokens[*index + 1].type) {
+				default: //silence compiler warnings
+				case TOKEN_ASSIGN:
+					type = AST_ASSIGN;
+					break;
+				case TOKEN_ADD_ASSIGN:
+					type = AST_ADD_ASSIGN;
+					break;
+				case TOKEN_SUB_ASSIGN:
+					type = AST_SUB_ASSIGN;
+					break;
+				case TOKEN_MUL_ASSIGN:
+					type = AST_MUL_ASSIGN;
+					break;
+				case TOKEN_DIV_ASSIGN:
+					type = AST_DIV_ASSIGN;
+					break;
+				}
+
+				dynarr_push(
+					nodes,
+					&(AstNode) {
+						.ident = {
+							.type = AST_IDENT,
+							.debug_info = tokens[*index].debug.debug_info,
+							.id = tokens[*index].ident.id,
+						},
+					},
+					err
+				);
+				if(*err) goto RET;
+
+				*index += 2;
+
+				size_t var = nodes->count - 1;
+
+				parse_expr(tokens, token_count, index, nodes, identifiers, err);
+				if(*err) goto RET;
+
+				size_t expr = nodes->count - 1;
+
+				dynarr_push(
+					nodes,
+					&(AstNode) {
+						.assign = {
+							.type = type,
+							.debug_info = debug,
+							.var = var,
+							.expr = expr,
+						},
+					},
+					err
+				);
+				if(*err) goto RET;
+				break;
+
+
 			case TOKEN_PLUS:
 			case TOKEN_MINUS:
 			case TOKEN_STAR:
@@ -457,6 +525,7 @@ static void parse_block(
 				fprintf(stderr, "Expected Statement, found Expression ");
 				lexer_print_token_to_file(stderr, &tokens[*index + 1], identifiers);
 				fprintf(stderr, "\n");
+				*err = ERROR_UNEXPECTED_DATA;
 				goto RET;
 
 			default:
@@ -466,6 +535,7 @@ static void parse_block(
 				*err = ERROR_UNEXPECTED_DATA;
 				goto RET;
 			}
+			break;
 
 		default:
 			fprintf(stderr, "Unexpected ");
@@ -771,6 +841,11 @@ void parser_clean_ast(AstNode *nodes, size_t node_count)
 		case AST_ADD:
 		case AST_SUB:
 		case AST_VAR_DECL:
+		case AST_ASSIGN:
+		case AST_ADD_ASSIGN:
+		case AST_SUB_ASSIGN:
+		case AST_MUL_ASSIGN:
+		case AST_DIV_ASSIGN:
 			break;
 		}
 	}
@@ -877,6 +952,25 @@ void parser_print_ast_to_file(
 			fprintf(file, ")");
 			break;
 
+		case AST_ASSIGN:
+			fprintf(file, "%zi = %zi", nodes[i].assign.var, nodes[i].assign.expr);
+			break;
+
+		case AST_ADD_ASSIGN:
+			fprintf(file, "%zi += %zi", nodes[i].assign.var, nodes[i].assign.expr);
+			break;
+
+		case AST_SUB_ASSIGN:
+			fprintf(file, "%zi -= %zi", nodes[i].assign.var, nodes[i].assign.expr);
+			break;
+
+		case AST_MUL_ASSIGN:
+			fprintf(file, "%zi *= %zi", nodes[i].assign.var, nodes[i].assign.expr);
+			break;
+
+		case AST_DIV_ASSIGN:
+			fprintf(file, "%zi /= %zi", nodes[i].assign.var, nodes[i].assign.expr);
+			break;
 		}
 		fprintf(file, "\n");
 	}

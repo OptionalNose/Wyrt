@@ -11,6 +11,10 @@ typedef enum {
 	TOKEN_RPAREN,
 	
 	TOKEN_ASSIGN,
+	TOKEN_ADD_ASSIGN,
+	TOKEN_SUB_ASSIGN,
+	TOKEN_MUL_ASSIGN,
+	TOKEN_DIV_ASSIGN,
 	
 	TOKEN_LCURLY,
 	TOKEN_RCURLY,
@@ -20,6 +24,7 @@ typedef enum {
 	TOKEN_RETURN,
 	
 	TOKEN_CONST,
+	TOKEN_VAR,
 	TOKEN_FN,
 	
 	TOKEN_IDENT,
@@ -30,7 +35,7 @@ typedef enum {
 	TOKEN_PLUS,
 	TOKEN_MINUS,
 
-	TOKEN_COMMA
+	TOKEN_COMMA,
 } TokenType;
 
 typedef struct {

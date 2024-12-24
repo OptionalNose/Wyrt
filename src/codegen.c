@@ -30,7 +30,13 @@
 	} while (0)
 
 typedef struct {
-	ptrdiff_t *vars; // - == not declared yet
+	ptrdiff_t id;
+	Type type;
+	bool mut;
+} Var;
+
+typedef struct {
+	Var *vars; // - == not declared yet
 	size_t var_count;
 	size_t *reg_params;
 	size_t reg_param_count;
@@ -154,7 +160,7 @@ static void find_in_scope(CodeGen *cg, size_t id, const Scope *scope, const Debu
 	}
 
 	for(size_t i = 0; i < scope->var_count; i++) {
-		if(id == scope->vars[i]) {
+		if(id == scope->vars[i].id) {
 			FPRINTF_OR_ERR(cg->output, "[rbp-%ji]", 8*(i+1));
 			goto RET;
 		}
@@ -461,7 +467,7 @@ RET:
 static void gen_fn_def(CodeGen *cg, size_t index, Error *err)
 {
 	DynArr vars = { 0 };
-	dynarr_init(&vars, sizeof (size_t));
+	dynarr_init(&vars, sizeof (Var));
 
 	DynArr reg_params = { 0 };
 	dynarr_init(&reg_params, sizeof (size_t));
@@ -525,7 +531,23 @@ static void gen_fn_def(CodeGen *cg, size_t index, Error *err)
 		const AstNode *statement = &cg->nodes[block->block.statements[i]];
 
 		if(statement->type == AST_VAR_DECL) {
-			dynarr_push(&vars, &(size_t) { -1 * statement->var_decl.id }, err); // mark as undeclared initially
+			const AstNode *data_type = &cg->nodes[statement->var_decl.data_type];
+			if(data_type->type != AST_IDENT) {
+				INVALID_AST_NODE("Expected Data Type", data_type);
+			}
+			
+			Type type = identifier_to_type(data_type->ident.id);
+			if(type.type == TYPE_INVALID) {
+				INVALID_AST_NODE("Invalid Data Type", data_type);
+			}
+
+			dynarr_push(
+				&vars,
+				&(Var) {
+					.id = -1 * statement->var_decl.id,
+					.type = type,
+					.mut = statement->var_decl.mut,
+				}, err); // mark as undeclared initially
 			if(*err) goto RET;
 		}
 	}
@@ -566,7 +588,7 @@ static void gen_fn_def(CodeGen *cg, size_t index, Error *err)
 			break;
 
 		case AST_VAR_DECL:
-			scope.vars[decl_count] *= -1; //mark as declared
+			scope.vars[decl_count].id *= -1; //mark as declared
 			decl_count += 1;
 
 			if(statement->var_decl.initial) {
@@ -580,7 +602,7 @@ static void gen_fn_def(CodeGen *cg, size_t index, Error *err)
 
 				size_t indx = SIZE_MAX;
 				for(size_t i = 0; i < vars.count; i++) {
-					if(statement->var_decl.id == *(size_t*)dynarr_at(&vars, i)) {
+					if(statement->var_decl.id == scope.vars[i].id) {
 						indx = i;
 						break;
 					}
@@ -598,6 +620,12 @@ static void gen_fn_def(CodeGen *cg, size_t index, Error *err)
 					"mov qword [rbp-%ji], rax\n",
 					8*(indx+1)
 				);
+			} else {
+				if(!statement->var_decl.mut) {
+					fprintf(stderr, "WARNING: Constant Variable '%s' at ", cg->identifiers[statement->var_decl.id]);
+					lexer_print_debug_to_file(stderr, &statement->var_decl.debug_info);
+					fprintf(stderr, " is not initialized.\n");
+				}
 			}
 
 			break;
@@ -613,6 +641,98 @@ static void gen_fn_def(CodeGen *cg, size_t index, Error *err)
 			if(*err) goto RET;
 
 			break;
+
+		case AST_ASSIGN:
+		case AST_ADD_ASSIGN:
+		case AST_SUB_ASSIGN:
+		case AST_MUL_ASSIGN:
+		case AST_DIV_ASSIGN:
+			do {} while(0);
+			
+			const AstNode *var = &cg->nodes[statement->assign.var];
+
+			if(var->type != AST_IDENT) {
+				INVALID_AST_NODE("Expected Identifier", var);
+			}
+
+			size_t indx = SIZE_MAX;
+			for(size_t i = 0; i < vars.count; i++) {
+				Var *candidate = &scope.vars[i];
+				if(var->ident.id == candidate->id) {
+					if(!candidate->mut) {
+						fprintf(stderr, "Attempting to Assign to Constant Variable '%s' at ", cg->identifiers[var->ident.id]);
+						lexer_print_debug_to_file(stderr, &var->debug.debug_info);
+						INVALID_AST_NODE("Attempting to Assign to Constant Variable", statement);
+					}
+					indx = i;
+					break;
+				}
+			}
+			if(indx == SIZE_MAX) {
+				fprintf(stderr, "Undefined Variable '%s' at ", cg->identifiers[var->ident.id]);
+				lexer_print_debug_to_file(stderr, &var->debug.debug_info);
+				fprintf(stderr, "\n");
+				*err = ERROR_TODO; 
+				goto RET;
+			}
+
+			gen_expr(cg, statement->assign.expr, scope.vars[indx].type, &scope, err);
+			if(*err) goto RET;
+
+			switch(statement->type) {
+			default: // silence compiler warnings
+			case AST_ASSIGN:
+				FPRINTF_OR_ERR(
+					cg->output,
+					"mov [rbp-%zi], rax\n",
+					8 * (indx + 1)
+				);
+				break;
+			case AST_ADD_ASSIGN:
+				FPRINTF_OR_ERR(
+					cg->output,
+					"add [rbp-%zi], rax\n",
+					8 * (indx + 1)
+				);
+				break;
+			case AST_SUB_ASSIGN:
+				FPRINTF_OR_ERR(
+					cg->output,
+					"sub [rbp-%zi], rax\n",
+					8 * (indx + 1)
+				);
+				break;
+			case AST_MUL_ASSIGN:
+				FPRINTF_OR_ERR(
+					cg->output,
+					"push rdx\n"
+					"xor edx, edx\n"
+					"mov r10, rax\n"
+					"mov rax, qword [rbp-%zi]\n"
+					"mul r10\n"
+					"mov [rbp-%zi], rax\n"
+					"pop rdx\n",
+					8 * (indx + 1),
+					8 * (indx + 1)
+				);
+				break;
+			case AST_DIV_ASSIGN:
+				FPRINTF_OR_ERR(
+					cg->output,
+					"push rdx\n"
+					"xor edx, edx\n"
+					"mov r10, rax\n"
+					"mov rax, qword [rbp-%zi]\n"
+					"div r10\n"
+					"mov [rbp-%zi], rax\n"
+					"pop rdx\n",
+					8 * (indx + 1),
+					8 * (indx + 1)
+				);
+				break;
+			}
+			break;
+				
 		default:
 			INVALID_AST_NODE("Expected Statement", statement);
 		}

@@ -20,6 +20,12 @@ typedef enum {
 	AST_VAR_DECL,
 
 	AST_FN_CALL,
+
+	AST_ASSIGN,
+	AST_ADD_ASSIGN,
+	AST_SUB_ASSIGN,
+	AST_MUL_ASSIGN,
+	AST_DIV_ASSIGN
 } AstNodeType;
 
 typedef union {
@@ -102,6 +108,12 @@ typedef union {
 		size_t *args;
 	} fn_call;
 
+	struct {
+		AstNodeType type;
+		DebugInfo debug_info;
+		size_t var;
+		size_t expr;
+	} assign;
 } AstNode;
 
 void parser_gen_ast(

@@ -5,10 +5,13 @@ It is currently less than skeletal, but the goal is to be eventually self-hosted
 
 It is planned to strongly support Design by Contract, with probably syntax similar to:
 ```
-fn realloc(ptr: &const void, size: u32) &var void
-	#clobber(#global)
-	#precond(ptr != null)
-	#postcond(#return != null)
+
+var counter: u8 = 0;
+
+fn print_increment_and_return_counter(str: &const u8) u8
+	#clobber(counter, stdout)
+	#precond(str != null)
+	#postcond(#return > 0)
 {...}
 ```
 The idea is that the better the programmer can understand what a function does and it's requirements, the less likely they are to create bugs.
@@ -61,6 +64,6 @@ So as long as the `libc` you are using follows the System V ABI Calling Conventi
 
 ## Known Issues
 The Makefile compiles a debug version of the compiler with Address and Undefined Santizers enabled.
-These Sanitizers sometimes get upset about the large stack-depths in the parser and segfault (:.
+These Sanitizers sometimes get upset about the large stack-depths in the parser and segfault :upside_down_face:.
 Just run the compiler repeatedly and it should work eventually.
 Alternatively, you could also just run it inside a debugger, and that seems to keep the Sanitzers from crashing. 

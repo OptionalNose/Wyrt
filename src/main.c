@@ -12,7 +12,8 @@ typedef struct {
 	char *ast_dump_file;
 	char *asm_dump_file;
 	char *output_file;
-	bool compile_only;
+	bool do_not_link;
+	bool do_not_assemble;
 } CmdlineOptions;
 
 int match_arg(const char *query, const char *arg)
@@ -59,7 +60,8 @@ int main(int argc, char **argv)
 				"\t--token-dump=<path>\t\t\t\tDump Lexed Tokens into file <path>\n"
 				"\t--ast-dump=<path>\t\t\t\tDump Parsed AST Nodes into file <path>\n"
 				"\t--asm-dump=<path>\t\t\t\tDump Assembly into file <path>\n"
-				"\t-c\t\t\t\t\t\tCompile Only, do not link\n"
+				"\t-S\t\t\t\t\t\tCompile only. Do not Assemble or Link. Incompatible with --asm-dump, use -o instead\n"
+				"\t-c\t\t\t\t\t\tCompile and Assemble only. Do not Link\n"
 				"\t-o <path>\t\t\t\t\tOutput to <path>\n"
 			);
 			fflush(stdout);
@@ -70,8 +72,11 @@ int main(int argc, char **argv)
 			options.ast_dump_file = match_arg("--ast-dump=", argv[i]) + argv[i];
 		} else if(match_arg("--asm-dump=", argv[i])) {
 			options.asm_dump_file = match_arg("--asm-dump=", argv[i]) + argv[i];
+		} else if(match_arg("-S", argv[i])) {
+			options.do_not_assemble = true;
+			options.do_not_link = true;
 		} else if(match_arg("-c", argv[i])) {
-			options.compile_only = true;
+			options.do_not_link = true;
 		} else if(match_arg("-o", argv[i])) {
 			if(i + 1 >= argc) {
 				fprintf(stderr, "No output file provided to '-o'.\n");
@@ -79,6 +84,7 @@ int main(int argc, char **argv)
 				goto RET;
 			}
 			options.output_file = argv[i + 1];
+			i += 1;
 		} else if(sscanf(argv[i], "%*1[^-]%c", &garbage)) {
 			sscanf(argv[i], "%*1[^-]%*s%n", &string_length);
 			char *path = malloc(string_length + 1);
@@ -102,6 +108,12 @@ int main(int argc, char **argv)
 
 	if(!options.src_file) {
 		fprintf(stderr, "No input files.\n");
+		err = ERROR_UNEXPECTED_DATA;
+		goto RET;
+	}
+
+	if(options.do_not_assemble && options.asm_dump_file) {
+		fprintf(stderr, "Cannot use -S and --asm-dump simultaneously. Use -o instead.\n");
 		err = ERROR_UNEXPECTED_DATA;
 		goto RET;
 	}
@@ -162,6 +174,8 @@ int main(int argc, char **argv)
 	char _asm_tmpnam[L_tmpnam];
 	if(options.asm_dump_file) {
 		asm_file_path = options.asm_dump_file;
+	} else if(options.do_not_assemble) {
+		asm_file_path = options.output_file ? options.output_file : "a.asm";
 	} else {
 		tmpnam(_asm_tmpnam);
 		asm_file_path = _asm_tmpnam;
@@ -176,48 +190,50 @@ int main(int argc, char **argv)
 
 	codegen_init(&codegen, asm_file, nodes, node_count, identifiers);
 
-	codegen_gen(&codegen, !options.compile_only, &err);
+	codegen_gen(&codegen, !options.do_not_link, &err);
 	if(err) goto RET;
 
 	fclose(asm_file);
 	asm_file = NULL;
 
-	char *obj_file;
-	char _obj_tmpnam[L_tmpnam];
-	if(options.compile_only) {
-		obj_file = options.output_file ? options.output_file : "a.o";
-	} else {
-		tmpnam(_obj_tmpnam);
-		obj_file = _obj_tmpnam;
-	}
-
-	string_builder_printf(
-		&compile, &err, "nasm %s -felf64 -o %s",
-		asm_file_path, obj_file
-	);
-	if(err) goto RET;
-
-	system(compile.str);
-
-	if(!options.asm_dump_file) remove(asm_file_path);
-	
-	if(!options.compile_only) {
-		char *output_file;
-		if(options.output_file) {
-			output_file = options.output_file;
+	if(!options.do_not_assemble) {
+		char *obj_file;
+		char _obj_tmpnam[L_tmpnam];
+		if(options.do_not_link) {
+			obj_file = options.output_file ? options.output_file : "a.o";
 		} else {
-			output_file = "a.out";
+			tmpnam(_obj_tmpnam);
+			obj_file = _obj_tmpnam;
 		}
-	
+
 		string_builder_printf(
-			&link, &err, "ld -o %s %s",
-			output_file, obj_file
+			&compile, &err, "nasm %s -felf64 -o %s",
+			asm_file_path, obj_file
 		);
 		if(err) goto RET;
 
-		system(link.str);
+		system(compile.str);
 
-		remove(obj_file);
+		if(!options.asm_dump_file) remove(asm_file_path);
+		
+		if(!options.do_not_link) {
+			char *output_file;
+			if(options.output_file) {
+				output_file = options.output_file;
+			} else {
+				output_file = "a.out";
+			}
+		
+			string_builder_printf(
+				&link, &err, "ld -o %s %s",
+				output_file, obj_file
+			);
+			if(err) goto RET;
+
+			system(link.str);
+
+			remove(obj_file);
+		}
 	}
 	
 RET:

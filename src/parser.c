@@ -130,6 +130,7 @@ static void parse_expr(
 
 	bool terminated = false;
 
+	TokenType last_seen = TOKEN_NONE;
 
 	Token *top;
 	while(!terminated) {
@@ -158,10 +159,145 @@ static void parse_expr(
 			operator_stack.count -= 1;
 			break;
 
-		case TOKEN_STAR:
+		case TOKEN_AMPERSAND:
 			do {} while(0);
 
-			while(top && (top->type == TOKEN_STAR || top->type == TOKEN_FSLASH)) {
+			DebugInfo addr_debug = tokens[*index].debug.debug_info;
+
+			*index += 1;
+			if(tokens[*index].type != TOKEN_IDENT) {
+				fprintf(stderr, "Expected Identifier after '&', found ");
+				lexer_print_token_to_file(stderr, &tokens[*index], identifiers);
+				*err = ERROR_UNEXPECTED_DATA;
+				goto RET;
+			}
+
+			dynarr_push(
+				nodes,
+				&(AstNode) {
+					.ident = {
+						.type = AST_IDENT,
+						.debug_info = tokens[*index].ident.debug_info,
+						.id = tokens[*index].ident.id,
+					},
+				},
+				err
+			);
+			if(*err) goto RET;
+
+			size_t base = nodes->count - 1;
+
+			dynarr_push(
+				nodes,
+				&(AstNode) {
+					.addr = {
+						.type = AST_ADDR,
+						.debug_info = addr_debug,
+						.base = base,
+					},
+				},
+				err
+			);
+			if(*err) goto RET;
+
+			dynarr_push(&free_terms, &(size_t) {nodes->count - 1}, err);
+			if(*err) goto RET;
+			break;
+
+		case TOKEN_STAR:
+			if(
+				last_seen == TOKEN_STAR
+				|| last_seen == TOKEN_FSLASH
+				|| last_seen == TOKEN_PLUS
+				|| last_seen == TOKEN_MINUS
+				|| last_seen == TOKEN_NONE
+			) {
+				DebugInfo debug = tokens[*index].debug.debug_info;
+
+				*index += 1;
+
+				switch(tokens[*index].type) {
+				case TOKEN_IDENT:
+					dynarr_push(
+						nodes,
+						&(AstNode) {
+							.ident = {
+								.type = AST_IDENT,
+								.debug_info = tokens[*index].ident.debug_info,
+								.id = tokens[*index].ident.id,
+							},
+						},
+						err
+					);
+					if(*err) goto RET;
+
+					size_t ident_target = nodes->count - 1;
+
+					dynarr_push(
+						nodes,
+						&(AstNode) {
+							.deref = {
+								.type = AST_DEREF,
+								.debug_info = debug,
+								.ptr = ident_target,
+							},
+						},
+						err
+					);
+					if(*err) goto RET;
+
+					dynarr_push(&free_terms, &(size_t) {nodes->count - 1}, err);
+					if(*err) goto RET;
+					break;
+
+				case TOKEN_LPAREN:
+					*index += 1;
+
+					parse_expr(tokens, token_count, index, nodes, identifiers, err);
+					if(*err) goto RET;
+
+					*index += 1;
+
+					if(tokens[*index].type != TOKEN_RPAREN) {
+						fprintf(stderr, "Expected Closed Parentheses for Target of Dereference, found ");
+						lexer_print_token_to_file(stderr, &tokens[*index], identifiers);
+						*err = ERROR_UNEXPECTED_DATA;
+						goto RET;
+					}
+
+					size_t paren_target = nodes->count - 1;
+
+					dynarr_push(
+						nodes,
+						&(AstNode) {
+							.deref = {
+								.type = AST_DEREF,
+								.debug_info = debug,
+								.ptr = paren_target,
+							},
+						},
+						err
+					);
+					if(*err) goto RET;
+
+					dynarr_push(&free_terms, &(size_t) { nodes->count - 1 }, err);
+					if(*err) goto RET;
+					break;
+
+				default:
+					fprintf(stderr, "Invalid Target for Dereference: ");
+					lexer_print_token_to_file(stderr, &tokens[*index], identifiers);
+					*err = ERROR_UNEXPECTED_DATA;
+					goto RET;
+				}
+
+				break;
+			}
+
+			while(
+				top
+				&& (top->type == TOKEN_AMPERSAND || top->type == TOKEN_STAR || top->type == TOKEN_FSLASH)
+			) {
 					operator_stack.count -= 1;
 
 					binop_push(*top, nodes, &free_terms, &operator_stack, err);
@@ -175,9 +311,22 @@ static void parse_expr(
 			break;
 
 		case TOKEN_FSLASH:
-			do {} while(0);
+			if(
+				last_seen == TOKEN_STAR
+				|| last_seen == TOKEN_FSLASH
+				|| last_seen == TOKEN_PLUS
+				|| last_seen == TOKEN_MINUS
+			) {
+				fprintf(stderr, "Malformed Expression. Unexpected ");
+				lexer_print_token_to_file(stderr, &tokens[*index], identifiers);
+				*err = ERROR_UNEXPECTED_DATA;
+				goto RET;
+			}
 
-			while(top && (top->type == TOKEN_STAR || top->type == TOKEN_FSLASH)) {
+			while(
+				top
+				&& (top->type == TOKEN_AMPERSAND || top->type == TOKEN_STAR || top->type == TOKEN_FSLASH)
+			) {
 					operator_stack.count -= 1;
 					binop_push(*top, nodes, &free_terms, &operator_stack, err);
 					if(*err) goto RET;
@@ -190,12 +339,23 @@ static void parse_expr(
 			break;
 
 		case TOKEN_PLUS:
-			do {} while(0);
+			if(
+				last_seen == TOKEN_STAR
+				|| last_seen == TOKEN_FSLASH
+				|| last_seen == TOKEN_PLUS
+				|| last_seen == TOKEN_MINUS
+			) {
+				fprintf(stderr, "Malformed Expression. Unexpected ");
+				lexer_print_token_to_file(stderr, &tokens[*index], identifiers);
+				*err = ERROR_UNEXPECTED_DATA;
+				goto RET;
+			}
 
 			while(
 				top &&
 				(
-					top->type == TOKEN_STAR || top->type == TOKEN_FSLASH
+					top->type == TOKEN_AMPERSAND
+					|| top->type == TOKEN_STAR || top->type == TOKEN_FSLASH
 					|| top->type == TOKEN_PLUS || top->type == TOKEN_MINUS
 				)
 			) {
@@ -211,7 +371,17 @@ static void parse_expr(
 			break;
 
 		case TOKEN_MINUS:
-			do {} while(0);
+			if(
+				last_seen == TOKEN_STAR
+				|| last_seen == TOKEN_FSLASH
+				|| last_seen == TOKEN_PLUS
+				|| last_seen == TOKEN_MINUS
+			) {
+				fprintf(stderr, "Malformed Expression. Unexpected ");
+				lexer_print_token_to_file(stderr, &tokens[*index], identifiers);
+				*err = ERROR_UNEXPECTED_DATA;
+				goto RET;
+			}
 
 			while(
 				top &&
@@ -284,6 +454,8 @@ static void parse_expr(
 			goto RET;
 		}
 
+		last_seen = tokens[*index].type;
+
 		*index += 1;
 	}
 
@@ -347,11 +519,16 @@ static void parse_block(
 
 		switch(tokens[*index].type) {
 		case TOKEN_RETURN:
-			*index += 1;
-			parse_expr(tokens, token_count, index, nodes, identifiers, err);
-			if(*err) goto RET;
+			do {} while(0);
 
-			size_t return_val = nodes->count - 1;
+			size_t return_val = 0;
+			if(tokens[*index + 1].type != TOKEN_SEMICOLON) {
+				*index += 1;
+				parse_expr(tokens, token_count, index, nodes, identifiers, err);
+				if(*err) goto RET;
+
+				return_val = nodes->count - 1;
+			} 
 
 			dynarr_push(
 				nodes,
@@ -365,7 +542,6 @@ static void parse_block(
 				err
 			);
 			if(*err) goto RET;
-
 			break;
 
 		case TOKEN_CONST:
@@ -445,6 +621,128 @@ static void parse_block(
 			if(*err) goto RET;
 
 			break;
+			
+		case TOKEN_STAR:
+			*index += 1;
+
+			switch(tokens[*index].type) {
+			case TOKEN_IDENT:
+				dynarr_push(
+					nodes,
+					&(AstNode) {
+						.ident = {
+							.type = AST_IDENT,
+							.debug_info = tokens[*index].debug.debug_info,
+							.id = tokens[*index].ident.id,
+						},
+					},
+					err
+				);
+				if(*err) goto RET;
+
+				size_t ident_target = nodes->count - 1;
+
+				dynarr_push(
+					nodes,
+					&(AstNode) {
+						.deref = {
+							.type = AST_DEREF,
+							.debug_info = debug_info,
+							.ptr = ident_target,
+						},
+					},
+					err
+				);
+				if(*err) goto RET;
+				break;
+
+			case TOKEN_LPAREN:
+				*index += 1;
+
+				parse_expr(tokens, token_count, index, nodes, identifiers, err);
+				if(*err) goto RET;
+
+				*index += 1;
+
+				if(tokens[*index].type != TOKEN_RPAREN) {
+					fprintf(stderr, "Expected ')', found ");
+					lexer_print_token_to_file(stderr, &tokens[*index], identifiers);
+					*err = ERROR_UNEXPECTED_DATA;
+					goto RET;
+				}
+
+				size_t paren_target = nodes->count - 1;
+
+				dynarr_push(
+					nodes,
+					&(AstNode) {
+						.deref = {
+							.type = AST_DEREF,
+							.debug_info = debug_info,
+							.ptr = paren_target,
+						},
+					},
+					err
+				);
+				if(*err) goto RET;
+				break;
+
+			default:
+				fprintf(stderr, "Invalid Target for Dereference: ");
+				lexer_print_token_to_file(stderr, &tokens[*index], identifiers);
+				*err = ERROR_UNEXPECTED_DATA;
+				goto RET;
+			}
+
+			size_t lhs = nodes->count - 1;
+			*index += 1;
+
+			AstNodeType type;
+			switch(tokens[*index].type) {
+			case TOKEN_ASSIGN:
+				type = AST_ASSIGN;
+				break;
+			case TOKEN_ADD_ASSIGN:
+				type = AST_ADD_ASSIGN;
+				break;
+			case TOKEN_SUB_ASSIGN:
+				type = AST_SUB_ASSIGN;
+				break;
+			case TOKEN_MUL_ASSIGN:
+				type = AST_MUL_ASSIGN;
+				break;
+			case TOKEN_DIV_ASSIGN:
+				type = AST_DIV_ASSIGN;
+				break;
+			default:
+				fprintf(stderr, "Expected Assignment, found ");
+				lexer_print_token_to_file(stderr, &tokens[*index], identifiers);
+				*err = ERROR_UNEXPECTED_DATA;
+				goto RET;
+			}
+
+			DebugInfo assign_debug = tokens[*index].debug.debug_info;
+
+			*index += 1;
+			parse_expr(tokens, token_count, index, nodes, identifiers, err);
+			if(*err) goto RET;
+
+			size_t expr = nodes->count - 1;
+
+			dynarr_push(
+				nodes,
+				&(AstNode) {
+					.assign = {
+						.type = type,
+						.debug_info = assign_debug,
+						.var = lhs,
+						.expr = expr,
+					},
+				},
+				err
+			);
+			if(*err) goto RET;
+			break;
 
 		case TOKEN_IDENT:
 			switch(tokens[*index + 1].type) {
@@ -520,7 +818,6 @@ static void parse_block(
 
 			case TOKEN_PLUS:
 			case TOKEN_MINUS:
-			case TOKEN_STAR:
 			case TOKEN_FSLASH:
 				fprintf(stderr, "Expected Statement, found Expression ");
 				lexer_print_token_to_file(stderr, &tokens[*index + 1], identifiers);
@@ -605,6 +902,48 @@ static void parse_type(
 		if(*err) goto RET;
 		break;
 		
+	case TOKEN_AMPERSAND:
+		do {} while(0);
+		AstNodeType access_modifier;
+		*index += 1;
+		switch(tokens[*index].type) {
+		case TOKEN_CONST:
+			access_modifier = AST_CONST_POINTER;
+			break;
+		case TOKEN_VAR:
+			access_modifier = AST_VAR_POINTER;
+			break;
+		case TOKEN_ABYSS:
+			access_modifier = AST_ABYSS_POINTER;
+			break;
+		default:
+			fprintf(stderr, "Expected Access Modifier for Pointer Type found ");
+			lexer_print_token_to_file(stderr, &tokens[*index], identifiers);
+			*err = ERROR_UNEXPECTED_DATA;
+			goto RET;
+		}
+
+		*index += 1;
+
+		parse_type(tokens, token_count, index, nodes, identifiers, err);
+		if(*err) goto RET;
+
+		size_t base_type = nodes->count - 1;
+
+		dynarr_push(
+			nodes,
+			&(AstNode) {
+				.pointer_type = {
+					.type = access_modifier,
+					.debug_info = location,
+					.base_type = base_type,
+				},
+			},
+			err
+		);
+		if(*err) goto RET;
+		break;
+
 	case TOKEN_LPAREN:
 		*index += 1;
 		while(tokens[*index].type != TOKEN_RPAREN) {
@@ -846,6 +1185,11 @@ void parser_clean_ast(AstNode *nodes, size_t node_count)
 		case AST_SUB_ASSIGN:
 		case AST_MUL_ASSIGN:
 		case AST_DIV_ASSIGN:
+		case AST_ADDR:
+		case AST_CONST_POINTER:
+		case AST_VAR_POINTER:
+		case AST_ABYSS_POINTER:
+		case AST_DEREF:
 			break;
 		}
 	}
@@ -970,6 +1314,26 @@ void parser_print_ast_to_file(
 
 		case AST_DIV_ASSIGN:
 			fprintf(file, "%zi /= %zi", nodes[i].assign.var, nodes[i].assign.expr);
+			break;
+
+		case AST_ADDR:
+			fprintf(file, "&%zi", nodes[i].addr.base);
+			break;
+		
+		case AST_CONST_POINTER:
+			fprintf(file, "&const %zi", nodes[i].pointer_type.base_type);
+			break;
+
+		case AST_VAR_POINTER:
+			fprintf(file, "&var %zi", nodes[i].pointer_type.base_type);
+			break;
+
+		case AST_ABYSS_POINTER:
+			fprintf(file, "&abyss %zi", nodes[i].pointer_type.base_type);
+			break;
+
+		case AST_DEREF:
+			fprintf(file, "*%zi", nodes[i].deref.ptr);
 			break;
 		}
 		fprintf(file, "\n");

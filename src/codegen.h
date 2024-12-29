@@ -1,19 +1,12 @@
 #pragma once
 
 #include "parser.h"
-typedef union {
-	enum {
-		TYPE_INVALID,
-		TYPE_PRIMITIVE_U8,
-		TYPE_PRIMITIVE_VOID,
-	} type;
-} Type;
 
 typedef struct {
 	size_t id;
-	Type ret;
+	size_t ret; // indices into nodes
 	size_t arg_count;
-	Type *args;
+	size_t *args; // indices into nodes
 } FnSig;
 
 typedef struct {

@@ -25,6 +25,7 @@ typedef enum {
 	
 	TOKEN_CONST,
 	TOKEN_VAR,
+	TOKEN_ABYSS,
 	TOKEN_FN,
 	
 	TOKEN_IDENT,
@@ -36,6 +37,8 @@ typedef enum {
 	TOKEN_MINUS,
 
 	TOKEN_COMMA,
+
+	TOKEN_AMPERSAND,
 } TokenType;
 
 typedef struct {

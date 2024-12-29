@@ -48,7 +48,7 @@ void lexer_clean(Lexer *lex)
 void lexer_clean_identifiers(char **identifiers, size_t identifier_count)
 {
 	if(!identifiers) return;
-	for(size_t i = 2; i < identifier_count; i++) {
+	for(size_t i = 5; i < identifier_count; i++) {
 		free(identifiers[i]);
 	}
 	free(identifiers);
@@ -126,6 +126,12 @@ void lexer_tokenize(
 	uint32_t prev_col = 1;
 
 	dynarr_push(&idents, &(char *){"u8"}, err);
+	if(*err) goto RET;
+	dynarr_push(&idents, &(char *){"u16"}, err);
+	if(*err) goto RET;
+	dynarr_push(&idents, &(char *){"u32"}, err);
+	if(*err) goto RET;
+	dynarr_push(&idents, &(char *){"u64"}, err);
 	if(*err) goto RET;
 	dynarr_push(&idents, &(char *){"void"}, err);
 	if(*err) goto RET;
@@ -214,6 +220,9 @@ void lexer_tokenize(
 		case ',':
 			tok.type = TOKEN_COMMA;
 			goto NEXT_TOK;
+		case '&':
+			tok.type = TOKEN_AMPERSAND;
+			goto NEXT_TOK;
 		default:
 			break;
 		}
@@ -252,6 +261,7 @@ void lexer_tokenize(
 				dynarr_push(&string_builder, &c, err);
 				if(*err) goto RET;
 			}
+			backup(lex, &pos, &line, &col, prev_col);
 			dynarr_push(&string_builder, &(char){'\0'}, err);
 			if(*err) goto RET;
 
@@ -266,6 +276,9 @@ void lexer_tokenize(
 				goto NEXT_TOK;
 			} else if(strcmp(string_builder.data, "var") == 0) {
 				tok.type = TOKEN_VAR;
+				goto NEXT_TOK;
+			} else if(strcmp(string_builder.data, "abyss") == 0) {
+				tok.type = TOKEN_ABYSS;
 				goto NEXT_TOK;
 			}
 
@@ -293,19 +306,9 @@ void lexer_tokenize(
 
 			tok.ident.id = id;
 			tok.type = TOKEN_IDENT;
-			backup(lex, &pos, &line, &col, prev_col);
 			goto NEXT_TOK;
 		}
 
-		c = get_char(lex, &pos, &line, &col, &prev_col);
-		if(c == EOF) {
-			fprintf(stderr, "Unexpected EOF\n");
-			*err = ERROR_UNEXPECTED_DATA;
-			goto RET;
-		}
-		dynarr_push(&string_builder, &c, err);
-
-		
 NEXT_TOK:
 		dynarr_push(&toks, &tok, err);
 		if(*err) goto RET;
@@ -393,6 +396,8 @@ void lexer_print_token_to_file(
 	case TOKEN_VAR:
 		fputs("var", file);
 		break;
+	case TOKEN_ABYSS:
+		fputs("abyss", file);
 	case TOKEN_IDENT:
 		fprintf(
 			file,
@@ -417,6 +422,9 @@ void lexer_print_token_to_file(
 		break;
 	case TOKEN_COMMA:
 		fprintf(file, "','");
+		break;
+	case TOKEN_AMPERSAND:
+		fprintf(file, "'&'");
 		break;
 	}
 	

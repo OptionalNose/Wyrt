@@ -802,7 +802,7 @@ static void gen_fn_def(CodeGen *cg, size_t index, Error *err)
 			decl_count += 1;
 
 			if(statement->var_decl.initial) {
-				gen_expr(cg, statement->var_decl.initial, scope.vars[decl_count].type, &scope, err);
+				gen_expr(cg, statement->var_decl.initial, scope.vars[decl_count-1].type, &scope, err);
 				if(*err) goto RET;
 
 				size_t indx = SIZE_MAX;

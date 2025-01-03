@@ -14,3 +14,5 @@ test/*.o
 tokens
 ast
 asm
+exitcode
+test_runner

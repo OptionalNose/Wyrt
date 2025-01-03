@@ -1,0 +1,34 @@
+{
+	.file = "mvp.wyrt",
+	.exitcode = 25,
+},
+
+{
+	.file = "binop.wyrt",
+	.exitcode = 33,
+},
+
+{
+	.file = "const.wyrt",
+	.exitcode = 33,
+},
+
+{
+	.file = "fn_call.wyrt",
+	.exitcode = 33,
+},
+
+{
+	.file = "var.wyrt",
+	.exitcode = 33,
+},
+
+{
+	.file = "ptrs.wyrt",
+	.exitcode = 49,
+},
+
+{
+	.file = "failing_types.wyrt",
+	.should_fail = true,
+}

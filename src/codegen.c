@@ -3,6 +3,7 @@
 #include <string.h>
 #include <stddef.h>
 
+#include "types.h"
 
 #define INVALID_AST_NODE(err_msg, node_ptr) do {\
 	fputs("Error: " err_msg " at ", stderr); \
@@ -31,7 +32,7 @@
 
 typedef struct {
 	ptrdiff_t id;
-	size_t type; //index into nodes
+	Type type; 
 	bool mut;
 } Var;
 
@@ -42,6 +43,7 @@ typedef struct {
 	size_t reg_param_count;
 	Var *stack_params;
 	size_t stack_param_count;
+	TypeContext tc;
 } Scope;
 
 void codegen_init(
@@ -61,7 +63,6 @@ void codegen_init(
 		.fn_sigs = NULL,
 	};
 }
-
 
 static void save_regs(FILE *file, Error *err)
 {
@@ -191,105 +192,10 @@ RET:
 	return;
 }
 
-static void emit_in_scope(CodeGen *cg, size_t id, const Scope *scope, const DebugInfo *debug, Error *err)
-{
-	for(size_t i = 0; i < scope->reg_param_count; i++) {
-		if(id == scope->reg_params[i].id) {
-			switch(i) {
-			case 0:
-				FPUTS_OR_ERR(cg->output, "rdi");
-				goto RET;
-			case 1:
-				FPUTS_OR_ERR(cg->output, "rsi");
-				goto RET;
-			case 2:
-				FPUTS_OR_ERR(cg->output, "rdx");
-				goto RET;
-			case 3:
-				FPUTS_OR_ERR(cg->output, "rcx");
-				goto RET;
-			case 4:
-				FPUTS_OR_ERR(cg->output, "r8");
-				goto RET;
-			case 5:
-				FPUTS_OR_ERR(cg->output, "r9");
-				goto RET;
-			}
-		}
-	}
-
-	for(size_t i = 0; i < scope->stack_param_count; i++) {
-		if(id == scope->stack_params[i].id) {
-			FPRINTF_OR_ERR(cg->output, "[rbp+%ji]", 16 + i * 8);
-			goto RET;
-		}
-	}
-
-	for(size_t i = 0; i < scope->var_count; i++) {
-		if(id == scope->vars[i].id) {
-			FPRINTF_OR_ERR(cg->output, "[rbp-%ji]", 8*(i+1));
-			goto RET;
-		}
-	}
-
-	fprintf(stderr, "Undeclared Variable '%s' at ", cg->identifiers[id]);
-	lexer_print_debug_to_file(stderr, debug);
-	fprintf(stderr, "\n");
-	*err = ERROR_UNDEFINED;
-
-RET:
-	return;
-}
-
-static size_t get_type_size(CodeGen *cg, size_t type, Error *err)
-{
-	size_t size = SIZE_MAX;
-	const AstNode *data_type = &cg->nodes[type];
-
-	switch(data_type->type) {
-	case AST_IDENT:
-		do {} while(0);
-
-		size_t id = data_type->ident.id;
-		switch(id) {
-		case 0: // u8
-			size = 1;
-			break;
-		case 1: // u16
-			size = 2;
-			break;
-		case 2: // u32
-			size = 4;
-			break;
-		case 3: // u64
-			size = 8;
-			break;
-		case 4: // void
-			size = 0;
-		}
-		break;
-
-	case AST_CONST_POINTER:
-	case AST_VAR_POINTER:
-	case AST_ABYSS_POINTER:
-		size = 8;
-		break;
-
-	default:
-		fprintf(stderr, "Expected Type at ");
-		lexer_print_debug_to_file(stderr, &data_type->debug.debug_info);
-		*err = ERROR_UNEXPECTED_DATA;
-		goto RET;
-	}
-
-RET:
-	return size;
-}
-
-static void gen_expr(CodeGen *cg, size_t index, size_t expected, size_t indirection_count, const Scope *scope, Error *err);
+static void gen_expr(CodeGen *cg, size_t index, Type expected, Scope *scope, Error *err);
 
 //SysV-ABI
-static void gen_fn_call(CodeGen *cg, size_t index, const Scope *scope, Error *err)
+static void gen_fn_call(CodeGen *cg, size_t index, Scope *scope, Error *err)
 {
 	const AstNode *call = &cg->nodes[index];
 
@@ -313,7 +219,9 @@ static void gen_fn_call(CodeGen *cg, size_t index, const Scope *scope, Error *er
 	}
 
 	for(size_t i = 0; i < (arg_count > 6 ? 6 : arg_count); i++) {
-		gen_expr(cg, call->fn_call.args[i], sig.args[i], 0, scope, err);
+		Type type = type_from_ast(&scope->tc, cg->nodes, sig.args[i], err);
+		if(*err) goto RET;
+		gen_expr(cg, call->fn_call.args[i], type, scope, err);
 		if(*err) goto RET;
 
 		switch(i) {
@@ -339,7 +247,9 @@ static void gen_fn_call(CodeGen *cg, size_t index, const Scope *scope, Error *er
 	}
 
 	for(size_t i = arg_count - 1; i >= 6; i--) {
-		gen_expr(cg, call->fn_call.args[i], sig.args[i], 0, scope, err);
+		Type type = type_from_ast(&scope->tc, cg->nodes, sig.args[i], err);
+		if(*err) goto RET;
+		gen_expr(cg, call->fn_call.args[i], type, scope, err);
 		if(*err) goto RET;
 
 		FPUTS_OR_ERR(cg->output, "push rax\n");
@@ -368,13 +278,13 @@ RET:
 }
 
 //SysV-ABI
-static void gen_expr(CodeGen *cg, size_t index, size_t expected, size_t indirection_count, const Scope *scope, Error *err)
+static void gen_expr(CodeGen *cg, size_t index, Type expected, Scope *scope, Error *err)
 {
 	const AstNode *expr = &cg->nodes[index];
 
 	switch(expr->type) {
 	case AST_ADD:
-		gen_expr(cg, expr->binop.lhs, expected, indirection_count, scope, err);
+		gen_expr(cg, expr->binop.lhs, expected, scope, err);
 		if(*err) goto RET;
 
 		switch(cg->nodes[expr->binop.rhs].type) {
@@ -388,14 +298,34 @@ static void gen_expr(CodeGen *cg, size_t index, size_t expected, size_t indirect
 
 		case AST_IDENT:
 			FPUTS_OR_ERR(cg->output, "add rax, ");
-			emit_in_scope(cg, cg->nodes[expr->binop.rhs].ident.id, scope, &cg->nodes[expr->binop.rhs].debug.debug_info, err);
+			size_t rhs_which, rhs_index;
+			Var rhs = find_in_scope(
+				cg,
+				cg->nodes[expr->binop.rhs].ident.id,
+				scope,
+				&cg->nodes[expr->binop.rhs].debug.debug_info,
+				&rhs_which, &rhs_index, 
+				err
+			);
+
+			if(!types_are_equal(rhs.type, expected)) {
+				fprintf(stderr, "Mismatched types: Expected ");
+				type_print(stderr, &scope->tc, expected);
+				fprintf(stderr, " found ");
+				type_print(stderr, &scope->tc, rhs.type);
+				fprintf(stderr, "\n");
+				*err = ERROR_UNEXPECTED_DATA;
+				goto RET;
+			}
+
+			print_in_scope(cg, scope, rhs_which, rhs_index, err);
 			if(*err) goto RET;
 			FPUTS_OR_ERR(cg->output, "\n");
 			break;
 
 		default:
 			FPUTS_OR_ERR(cg->output, "push rax\n");
-			gen_expr(cg, expr->binop.rhs, expected, indirection_count, scope, err);
+			gen_expr(cg, expr->binop.rhs, expected, scope, err);
 			if(*err) goto RET;
 
 			FPUTS_OR_ERR(
@@ -409,7 +339,7 @@ static void gen_expr(CodeGen *cg, size_t index, size_t expected, size_t indirect
 		break;
 	
 	case AST_SUB:
-		gen_expr(cg, expr->binop.lhs, expected, indirection_count, scope, err);
+		gen_expr(cg, expr->binop.lhs, expected, scope, err);
 		if(*err) goto RET;
 
 		switch(cg->nodes[expr->binop.rhs].type) {
@@ -423,14 +353,34 @@ static void gen_expr(CodeGen *cg, size_t index, size_t expected, size_t indirect
 
 		case AST_IDENT:
 			FPUTS_OR_ERR(cg->output, "sub rax, ");
-			emit_in_scope(cg, cg->nodes[expr->binop.rhs].ident.id, scope, &cg->nodes[expr->binop.rhs].debug.debug_info, err);
+			size_t rhs_which, rhs_index;
+			Var rhs = find_in_scope(
+				cg,
+				cg->nodes[expr->binop.rhs].ident.id,
+				scope,
+				&cg->nodes[expr->binop.rhs].debug.debug_info,
+				&rhs_which, &rhs_index, 
+				err
+			);
+
+			if(!types_are_equal(rhs.type, expected)) {
+				fprintf(stderr, "Mismatched types: Expected ");
+				type_print(stderr, &scope->tc, expected);
+				fprintf(stderr, " found ");
+				type_print(stderr, &scope->tc, rhs.type);
+				fprintf(stderr, "\n");
+				*err = ERROR_UNEXPECTED_DATA;
+				goto RET;
+			}
+
+			print_in_scope(cg, scope, rhs_which, rhs_index, err);
 			if(*err) goto RET;
 			FPUTS_OR_ERR(cg->output, "\n");
 			break;
 
 		default:
 			FPUTS_OR_ERR(cg->output, "push rax\n");
-			gen_expr(cg, expr->binop.rhs, expected, indirection_count, scope, err);
+			gen_expr(cg, expr->binop.rhs, expected, scope, err);
 			if(*err) goto RET;
 
 			FPUTS_OR_ERR(
@@ -444,7 +394,7 @@ static void gen_expr(CodeGen *cg, size_t index, size_t expected, size_t indirect
 		break;
 	
 	case AST_MUL:
-		gen_expr(cg, expr->binop.lhs, expected, indirection_count, scope, err);
+		gen_expr(cg, expr->binop.lhs, expected, scope, err);
 		if(*err) goto RET;
 
 		switch(cg->nodes[expr->binop.rhs].type) {
@@ -458,7 +408,27 @@ static void gen_expr(CodeGen *cg, size_t index, size_t expected, size_t indirect
 
 		case AST_IDENT:
 			FPUTS_OR_ERR(cg->output, "mov r10, ");
-			emit_in_scope(cg, cg->nodes[expr->binop.rhs].ident.id, scope, &cg->nodes[expr->binop.rhs].debug.debug_info, err);
+			size_t rhs_which, rhs_index;
+			Var rhs = find_in_scope(
+				cg,
+				cg->nodes[expr->binop.rhs].ident.id,
+				scope,
+				&cg->nodes[expr->binop.rhs].debug.debug_info,
+				&rhs_which, &rhs_index, 
+				err
+			);
+
+			if(!types_are_equal(rhs.type, expected)) {
+				fprintf(stderr, "Mismatched types: Expected ");
+				type_print(stderr, &scope->tc, expected);
+				fprintf(stderr, " found ");
+				type_print(stderr, &scope->tc, rhs.type);
+				fprintf(stderr, "\n");
+				*err = ERROR_UNEXPECTED_DATA;
+				goto RET;
+			}
+
+			print_in_scope(cg, scope, rhs_which, rhs_index, err);
 			if(*err) goto RET;
 			FPUTS_OR_ERR(cg->output, "\n");
 			break;
@@ -466,7 +436,7 @@ static void gen_expr(CodeGen *cg, size_t index, size_t expected, size_t indirect
 		default:
 			FPUTS_OR_ERR(cg->output, "push rax\n");
 
-			gen_expr(cg, expr->binop.rhs, expected, indirection_count, scope, err);
+			gen_expr(cg, expr->binop.rhs, expected, scope, err);
 			if(*err) goto RET;
 
 			FPUTS_OR_ERR(
@@ -487,7 +457,7 @@ static void gen_expr(CodeGen *cg, size_t index, size_t expected, size_t indirect
 		break;
 
 	case AST_DIV:
-		gen_expr(cg, expr->binop.lhs, expected, indirection_count, scope, err);
+		gen_expr(cg, expr->binop.lhs, expected, scope, err);
 		if(*err) goto RET;
 
 		switch(cg->nodes[expr->binop.rhs].type) {
@@ -501,7 +471,27 @@ static void gen_expr(CodeGen *cg, size_t index, size_t expected, size_t indirect
 
 		case AST_IDENT:
 			FPUTS_OR_ERR(cg->output, "mov r10, ");
-			emit_in_scope(cg, cg->nodes[expr->binop.rhs].ident.id, scope, &cg->nodes[expr->binop.rhs].debug.debug_info, err);
+			size_t rhs_which, rhs_index;
+			Var rhs = find_in_scope(
+				cg,
+				cg->nodes[expr->binop.rhs].ident.id,
+				scope,
+				&cg->nodes[expr->binop.rhs].debug.debug_info,
+				&rhs_which, &rhs_index, 
+				err
+			);
+
+			if(!types_are_equal(rhs.type, expected)) {
+				fprintf(stderr, "Mismatched types: Expected ");
+				type_print(stderr, &scope->tc, expected);
+				fprintf(stderr, " found ");
+				type_print(stderr, &scope->tc, rhs.type);
+				fprintf(stderr, "\n");
+				*err = ERROR_UNEXPECTED_DATA;
+				goto RET;
+			}
+
+			print_in_scope(cg, scope, rhs_which, rhs_index, err);
 			if(*err) goto RET;
 			FPUTS_OR_ERR(cg->output, "\n");
 			break;
@@ -509,7 +499,7 @@ static void gen_expr(CodeGen *cg, size_t index, size_t expected, size_t indirect
 		default:
 			FPUTS_OR_ERR(cg->output, "push rax\n");
 
-			gen_expr(cg, expr->binop.rhs, expected, indirection_count, scope, err);
+			gen_expr(cg, expr->binop.rhs, expected, scope, err);
 			if(*err) goto RET;
 
 			FPUTS_OR_ERR(
@@ -539,7 +529,27 @@ static void gen_expr(CodeGen *cg, size_t index, size_t expected, size_t indirect
 	
 	case AST_IDENT:
 		FPUTS_OR_ERR(cg->output, "mov rax, ");
-		emit_in_scope(cg, expr->ident.id, scope, &expr->debug.debug_info, err);
+		size_t ident_which, ident_index;
+		Var var = find_in_scope(
+			cg,
+			expr->ident.id,
+			scope,
+			&expr->debug.debug_info,
+			&ident_which, &ident_index, 
+			err
+		);
+
+		if(!types_are_equal(var.type, expected)) {
+			fprintf(stderr, "Mismatched types: Expected ");
+			type_print(stderr, &scope->tc, expected);
+			fprintf(stderr, " found ");
+			type_print(stderr, &scope->tc, var.type);
+			fprintf(stderr, "\n");
+			*err = ERROR_UNEXPECTED_DATA;
+			goto RET;
+		}
+
+		print_in_scope(cg, scope, ident_which, ident_index, err);
 		if(*err) goto RET;
 		FPUTS_OR_ERR(cg->output, "\n");
 		break;
@@ -553,24 +563,23 @@ static void gen_expr(CodeGen *cg, size_t index, size_t expected, size_t indirect
 			goto RET;
 		}
 
-		size_t which;
-		size_t i;
+		size_t deref_which, deref_index;
 		Var addr = find_in_scope(
 			cg,
 			cg->nodes[expr->deref.ptr].ident.id,
 			scope,
 			&cg->nodes[expr->deref.ptr].debug.debug_info,
-			&which,
-			&i,
+			&deref_which,
+			&deref_index,
 			err
 		);
 		if(*err) goto RET;
 
 		if(
-			cg->nodes[addr.type].type != AST_CONST_POINTER
-			&& cg->nodes[addr.type].type != AST_VAR_POINTER
+			addr.type.type != TYPE_POINTER_CONST
+			&& addr.type.type != TYPE_POINTER_VAR
 		) {
-			if(cg->nodes[addr.type].type == AST_ABYSS_POINTER) {
+			if(addr.type.type == TYPE_POINTER_ABYSS) {
 				fprintf(stderr, "Error: Attempting to Read value from Abyssal Pointer at ");
 				lexer_print_debug_to_file(stderr, &cg->nodes[expr->deref.ptr].debug.debug_info);
 				*err = ERROR_UNEXPECTED_DATA;
@@ -583,7 +592,7 @@ static void gen_expr(CodeGen *cg, size_t index, size_t expected, size_t indirect
 		}
 
 		const char *targsize;
-		switch(get_type_size(cg, addr.type, err)) {
+		switch(types_get_size(addr.type)) {
 		case 1:
 			targsize = "byte";
 			break;
@@ -603,7 +612,7 @@ static void gen_expr(CodeGen *cg, size_t index, size_t expected, size_t indirect
 			"mov rax, %s [",
 			targsize
 		);
-		print_in_scope(cg, scope, which, i, err);
+		print_in_scope(cg, scope, deref_which, deref_index, err);
 		if(*err) goto RET;
 		FPUTS_OR_ERR(cg->output, "]\n");
 		break;
@@ -672,6 +681,9 @@ static void gen_fn_def(CodeGen *cg, size_t index, Error *err)
 	DynArr stack_params = { 0 };
 	dynarr_init(&stack_params, sizeof (Var));
 
+	TypeContext tc;
+	types_init(&tc, err);
+
 	const AstNode *fn_def = &cg->nodes[index];
 	const AstNode *ident = &cg->nodes[fn_def->fn_def.ident];
 	const AstNode *fn_type = &cg->nodes[fn_def->fn_def.fn_type];
@@ -680,33 +692,21 @@ static void gen_fn_def(CodeGen *cg, size_t index, Error *err)
 		INVALID_AST_NODE("Expected Function Type", fn_type);
 	}
 
-	const AstNode *ret_type = &cg->nodes[fn_type->fn_type.ret_type];
-
-	if(ret_type->type != AST_IDENT) {
-		INVALID_AST_NODE("Expected Type", ret_type);
-	}
+	Type ret_type = type_from_ast(&tc, cg->nodes, fn_type->fn_type.ret_type, err);
+	if(*err) goto RET;
 
 	for(size_t i = 0; i < fn_type->fn_type.arg_count; i++) {
 		const AstNode *arg_ident = &cg->nodes[fn_type->fn_type.args[2*i]];
-		const AstNode *arg_type = &cg->nodes[fn_type->fn_type.args[2*i + 1]];
 
-		if(
-			arg_type->type != AST_IDENT
-			&& arg_type->type != AST_CONST_POINTER
-			&& arg_type->type != AST_VAR_POINTER
-			&& arg_type->type != AST_ABYSS_POINTER
-		) {
-			INVALID_AST_NODE(
-				"Illegal Type for Function Parameter", arg_type
-			);
-		}
+		Type t = type_from_ast(&tc, cg->nodes, fn_type->fn_type.args[2*i + 1], err);
+		if(*err) goto RET;
 
 		if(reg_params.count <= 5) {
 			dynarr_push(
 				&reg_params,
 				&(Var) {
 					.id = arg_ident->ident.id,
-					.type = fn_type->fn_type.args[2*i + 1],
+					.type = t,
 					.mut = false,
 				},
 				err
@@ -717,7 +717,7 @@ static void gen_fn_def(CodeGen *cg, size_t index, Error *err)
 				&stack_params,
 				&(Var) {
 					.id = arg_ident->ident.id,
-					.type = fn_type->fn_type.args[2*i + 1],
+					.type = t,
 					.mut = false,
 				},
 				err
@@ -743,21 +743,14 @@ static void gen_fn_def(CodeGen *cg, size_t index, Error *err)
 		const AstNode *statement = &cg->nodes[block->block.statements[i]];
 
 		if(statement->type == AST_VAR_DECL) {
-			const AstNode *data_type = &cg->nodes[statement->var_decl.data_type];
-			if(
-				data_type->type != AST_IDENT
-				&& data_type->type != AST_CONST_POINTER
-				&& data_type->type != AST_VAR_POINTER
-				&& data_type->type != AST_ABYSS_POINTER
-			) {
-				INVALID_AST_NODE("Expected Data Type", data_type);
-			}
-			
+			Type t = type_from_ast(&tc, cg->nodes, statement->var_decl.data_type, err);
+			if(*err) goto RET;
+
 			dynarr_push(
 				&vars,
 				&(Var) {
 					.id = -1 * statement->var_decl.id, // mark as undeclared initially
-					.type = statement->var_decl.data_type,
+					.type = t,  
 					.mut = statement->var_decl.mut,
 				},
 				err
@@ -773,6 +766,7 @@ static void gen_fn_def(CodeGen *cg, size_t index, Error *err)
 		.reg_param_count = reg_params.count,
 		.stack_params = stack_params.data,
 		.stack_param_count = stack_params.count,
+		.tc = tc,
 	};
 
 	FPRINTF_OR_ERR(
@@ -790,7 +784,7 @@ static void gen_fn_def(CodeGen *cg, size_t index, Error *err)
 		switch(statement->type) {
 		case AST_RET:
 			if(statement->ret.return_val) {
-				gen_expr(cg, statement->ret.return_val, fn_type->fn_type.ret_type, 0, &scope, err);
+				gen_expr(cg, statement->ret.return_val, ret_type, &scope, err);
 				if(*err) goto RET;
 			}
 	
@@ -808,7 +802,7 @@ static void gen_fn_def(CodeGen *cg, size_t index, Error *err)
 			decl_count += 1;
 
 			if(statement->var_decl.initial) {
-				gen_expr(cg, statement->var_decl.initial, statement->var_decl.data_type, 0, &scope, err);
+				gen_expr(cg, statement->var_decl.initial, scope.vars[decl_count].type, &scope, err);
 				if(*err) goto RET;
 
 				size_t indx = SIZE_MAX;
@@ -885,7 +879,7 @@ static void gen_fn_def(CodeGen *cg, size_t index, Error *err)
 						goto RET;
 					}
 
-					gen_expr(cg, statement->assign.expr, scope.vars[indx].type, 0, &scope, err);
+					gen_expr(cg, statement->assign.expr, scope.vars[indx].type, &scope, err);
 					if(*err) goto RET;
 
 					switch(statement->type) {
@@ -955,25 +949,22 @@ static void gen_fn_def(CodeGen *cg, size_t index, Error *err)
 				size_t i;
 				Var ptr = find_in_scope(cg, base->ident.id, &scope, &base->debug.debug_info, &which, &i, err);
 				if(*err) goto RET;
-
-
-				const AstNode *ptr_type = &cg->nodes[ptr.type];
+				
 				if(
-					ptr_type->type != AST_VAR_POINTER
-					&& ptr_type->type != AST_ABYSS_POINTER
+					ptr.type.type != TYPE_POINTER_VAR
+					&& ptr.type.type != TYPE_POINTER_ABYSS
 				) {
-					if(ptr_type->type == AST_CONST_POINTER) {
-						INVALID_AST_NODE("Cannot Assign to Dereferenced Constant Pointer", ptr_type);
+					if(ptr.type.type == TYPE_POINTER_CONST) {
+						INVALID_AST_NODE("Cannot Assign to Dereferenced Constant Pointer", base);
 					}
-					INVALID_AST_NODE("Dereferenced Identifier must be a Pointer Type", ptr_type);
+					INVALID_AST_NODE("Dereferenced Identifier must be a Pointer Type", base);
 				}
 
-				gen_expr(cg, statement->assign.expr, ptr_type->pointer_type.base_type, 0, &scope, err);
+				gen_expr(cg, statement->assign.expr, ptr.type, &scope, err);
 				if(*err) goto RET;
 
 				const char *sizestr;
-				size_t size = get_type_size(cg, ptr_type->pointer_type.base_type, err);
-				if(*err) goto RET;
+				size_t size = types_get_size(ptr.type);
 				switch(size) {
 				case 1:
 					sizestr = "byte";
@@ -1150,6 +1141,7 @@ static void gen_fn_def(CodeGen *cg, size_t index, Error *err)
 	}
 
 RET:
+	types_clean(&tc);
 	dynarr_clean(&vars);
 	dynarr_clean(&reg_params);
 	dynarr_clean(&stack_params);

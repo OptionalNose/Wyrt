@@ -68,3 +68,8 @@ void string_builder_printf(
 	const char *fmt_str,
 	...
 );
+
+typedef enum {
+	PLATFORM_LINUX,
+	PLATFORM_WINDOWS
+} PlatformType;

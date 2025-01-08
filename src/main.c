@@ -14,6 +14,8 @@ typedef struct {
 	char *output_file;
 	bool do_not_link;
 	bool do_not_assemble;
+	PlatformType platform;
+	char *linker;
 } CmdlineOptions;
 
 int match_arg(const char *query, const char *arg)
@@ -31,6 +33,14 @@ int match_arg(const char *query, const char *arg)
 int main(int argc, char **argv)
 {
 	CmdlineOptions options = { 0 };
+#ifdef WINDOWS
+	options.platform = PLATOFRM_WINDOWS;
+	options.linker = "ldd";
+#else
+	options.platform = PLATFORM_LINUX;
+	options.linker = "ld";
+#endif
+
 	Error err = ERROR_OK;
 
 	Token *tokens = NULL;
@@ -63,6 +73,9 @@ int main(int argc, char **argv)
 				"\t-S\t\t\t\t\t\tCompile only. Do not Assemble or Link. Incompatible with --asm-dump, use -o instead\n"
 				"\t-c\t\t\t\t\t\tCompile and Assemble only. Do not Link\n"
 				"\t-o <path>\t\t\t\t\tOutput to <path>\n"
+				"\t--target=<linux, windows>\t\t\tSet Default Build Target. Defaults to Native.\n"
+				"\t--linker=<path>\t\t\t\t\tOverride default Linker (GNU's ld)."
+				"Note: Linker must accept GCC-style command-line flags.\n"
 			);
 			fflush(stdout);
 			goto RET;
@@ -72,6 +85,18 @@ int main(int argc, char **argv)
 			options.ast_dump_file = match_arg("--ast-dump=", argv[i]) + argv[i];
 		} else if(match_arg("--asm-dump=", argv[i])) {
 			options.asm_dump_file = match_arg("--asm-dump=", argv[i]) + argv[i];
+		} else if(match_arg("--linker=", argv[i])) {
+			options.linker = match_arg("--linker=", argv[i]) + argv[i];
+		} else if(match_arg("--target=", argv[i])) {
+			if(match_arg("--target=linux", argv[i])) {
+				options.platform = PLATFORM_LINUX;
+			} else if(match_arg("--target=windows", argv[i])) {
+				options.platform = PLATFORM_WINDOWS;
+			} else {
+				fprintf(stderr, "Invalid Target.\n");
+				err = ERROR_UNEXPECTED_DATA;
+				goto RET;
+			}
 		} else if(match_arg("-S", argv[i])) {
 			options.do_not_assemble = true;
 			options.do_not_link = true;
@@ -118,7 +143,13 @@ int main(int argc, char **argv)
 		goto RET;
 	}
 
-
+#ifndef WINDOWS
+	if(options.platform == PLATFORM_WINDOWS) {
+		if(strcmp(options.linker, "ld") == 0) {
+			options.linker = "x86_64-w64-mingw32-ld";
+		}
+	}
+#endif
 	lexer_init(&lexer, options.src_file, &err);
 	if(err) goto RET;
 
@@ -183,14 +214,14 @@ int main(int argc, char **argv)
 	
 	asm_file = fopen(asm_file_path, "wb");
 	if(!asm_file) {
-		fprintf(stderr, "Error Creating File for LLVM IR!\n");
+		fprintf(stderr, "Error Creating Assembly File!\n");
 		err = ERROR_IO;
 		goto RET;
 	}
 
 	codegen_init(&codegen, asm_file, nodes, node_count, identifiers);
 
-	codegen_gen(&codegen, !options.do_not_link, &err);
+	codegen_gen(&codegen, !options.do_not_link, options.platform, &err);
 	if(err) goto RET;
 
 	fclose(asm_file);
@@ -207,8 +238,10 @@ int main(int argc, char **argv)
 		}
 
 		string_builder_printf(
-			&compile, &err, "nasm %s -felf64 -o %s",
-			asm_file_path, obj_file
+			&compile, &err, "nasm %s -f%s -o %s",
+			asm_file_path,
+			(options.platform == PLATFORM_WINDOWS) ? "win64" : "elf64",
+			obj_file
 		);
 		if(err) goto RET;
 
@@ -225,8 +258,11 @@ int main(int argc, char **argv)
 			}
 		
 			string_builder_printf(
-				&link, &err, "ld -o %s %s",
-				output_file, obj_file
+				&link, &err, "%s -o %s %s %s",
+				options.linker,
+				output_file,
+				obj_file,
+				(options.platform == PLATFORM_WINDOWS) ? "-lkernel32" : ""
 			);
 			if(err) goto RET;
 

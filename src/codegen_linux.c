@@ -987,8 +987,6 @@ static void gen_fn_def(CodeGen *cg, size_t index, Error *err)
 				case AST_MUL_ASSIGN:
 					FPRINTF_OR_ERR(
 						cg->output,
-						"push rdx\n"
-						"xor edx, edx\n"
 						"mov r10, rax\n"
 						"mov%s rax, %s [",
 						size < 4 ? "zx" : "",
@@ -999,7 +997,10 @@ static void gen_fn_def(CodeGen *cg, size_t index, Error *err)
 					FPRINTF_OR_ERR(
 						cg->output,
 						"]\n"
+						"push rdx\n"
+						"xor edx, edx\n"
 						"mul r10\n"
+						"pop rdx\n"
 						"mov %s [",
 						sizestr
 					);
@@ -1019,17 +1020,11 @@ static void gen_fn_def(CodeGen *cg, size_t index, Error *err)
 						FPUTS_OR_ERR(cg->output, "rax");
 						break;
 					}
-					FPUTS_OR_ERR(
-						cg->output,
-						"\n"
-						"pop rdx\n"
-					);
+					FPUTS_OR_ERR(cg->output, "]\n");
 					break;
 				case AST_DIV_ASSIGN:
 					FPRINTF_OR_ERR(
 						cg->output,
-						"push rdx\n"
-						"xor edx, edx\n"
 						"mov r10, rax\n"
 						"mov%s rax, %s [",
 						size < 4 ? "zx" : "",
@@ -1040,7 +1035,10 @@ static void gen_fn_def(CodeGen *cg, size_t index, Error *err)
 					FPRINTF_OR_ERR(
 						cg->output,
 						"]\n"
-						"mul r10\n"
+						"push rdx\n"
+						"xor edx, edx\n"
+						"div r10\n"
+						"pop rdx\n"
 						"mov %s [",
 						sizestr
 					);
@@ -1060,11 +1058,7 @@ static void gen_fn_def(CodeGen *cg, size_t index, Error *err)
 						FPUTS_OR_ERR(cg->output, "rax");
 						break;
 					}
-					FPUTS_OR_ERR(
-						cg->output,
-						"]\n"
-						"pop rdx\n"
-					);
+					FPUTS_OR_ERR(cg->output, "]\n");
 					break;
 				}
 				break;

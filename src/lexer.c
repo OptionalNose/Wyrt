@@ -223,6 +223,12 @@ void lexer_tokenize(
 		case '&':
 			tok.type = TOKEN_AMPERSAND;
 			goto NEXT_TOK;
+		case '[':
+			tok.type = TOKEN_LSQUARE;
+			goto NEXT_TOK;
+		case ']':
+			tok.type = TOKEN_RSQUARE;
+			goto NEXT_TOK;
 		default:
 			break;
 		}
@@ -262,6 +268,12 @@ void lexer_tokenize(
 				if(*err) goto RET;
 			}
 			backup(lex, &pos, &line, &col, prev_col);
+			if(string_builder.count == 1) {
+				if(*(char*)dynarr_at(&string_builder, 0) == '_') {
+					tok.type = TOKEN_UNDERSCORE;
+					goto NEXT_TOK;
+				}
+			}
 			dynarr_push(&string_builder, &(char){'\0'}, err);
 			if(*err) goto RET;
 
@@ -425,6 +437,15 @@ void lexer_print_token_to_file(
 		break;
 	case TOKEN_AMPERSAND:
 		fprintf(file, "'&'");
+		break;
+	case TOKEN_UNDERSCORE:
+		fprintf(file, "'_'");
+		break;
+	case TOKEN_LSQUARE:
+		fprintf(file, "'['");
+		break;
+	case TOKEN_RSQUARE:
+		fprintf(file, "']'");
 		break;
 	}
 	

@@ -3,6 +3,7 @@
 void codegen_init(
 		CodeGen *cg,
 		FILE *output,
+		PlatformType plat,
 		const AstNode *nodes,
 		size_t node_count,
 		char *const *identifiers
@@ -10,6 +11,7 @@ void codegen_init(
 {
 	*cg = (CodeGen) {
 		.output = output,
+		.plat = plat,
 		.nodes = nodes,
 		.node_count = node_count,
 		.identifiers = identifiers,
@@ -26,16 +28,8 @@ void codegen_clean(const CodeGen *cg)
 	if(cg->fn_sigs) free(cg->fn_sigs);
 }
 
-void codegen_gen(CodeGen *cg, bool exec, PlatformType plat, Error *err)
+void codegen_gen(CodeGen *cg, bool exec, Error *err)
 {
-	switch(plat) {
-	case PLATFORM_LINUX:
-		codegen_gen_linux(cg, exec, err);
-		break;
-	case PLATFORM_WINDOWS:
-		codegen_gen_windows(cg, exec, err);
-		break;
-	}
-
+	codegen_asm(cg, exec, err);
 	return;
 }

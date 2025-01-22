@@ -29,9 +29,18 @@ typedef enum {
 
 	AST_DEREF,
 	AST_ADDR,
-	AST_CONST_POINTER,
-	AST_VAR_POINTER,
-	AST_ABYSS_POINTER
+	AST_POINTER_CONST,
+	AST_POINTER_VAR,
+	AST_POINTER_ABYSS,
+
+	AST_ARRAY,
+	AST_SLICE_CONST,
+	AST_SLICE_VAR,
+	AST_SLICE_ABYSS,
+
+	AST_SUBSCRIPT,
+
+	AST_ARRAY_LIT,
 } AstNodeType;
 
 typedef union {
@@ -138,6 +147,33 @@ typedef union {
 		DebugInfo debug_info;
 		size_t ptr;
 	} deref;
+
+	struct {
+		AstNodeType type;
+		DebugInfo debug_info;
+		size_t elem_type;
+		size_t len; //0 == _ 
+	} array;
+
+	struct {
+		AstNodeType type;
+		DebugInfo debug_info;
+		size_t elem_type;
+	} slice;
+
+	struct {
+		AstNodeType type;
+		DebugInfo debug_info;
+		size_t arr;
+		size_t index;
+	} subscript;
+
+	struct {
+		AstNodeType type;
+		DebugInfo debug_info;
+		size_t elem_count;
+		size_t *elems;
+	} array_lit;
 } AstNode;
 
 void parser_gen_ast(

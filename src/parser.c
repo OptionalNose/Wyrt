@@ -136,6 +136,48 @@ static void parse_expr(
 	while(!terminated) {
 		top = dynarr_from_back(&operator_stack, 0);
 		switch(tokens[*index].type) {
+		case TOKEN_LCURLY:
+			do {} while(0);
+			DynArr elems;
+			dynarr_init(&elems, sizeof(size_t));
+
+			DebugInfo array_lit_debug = tokens[*index].debug.debug_info;
+
+			while(tokens[*index].type != TOKEN_RCURLY) {
+				*index += 1;
+				parse_expr(tokens, token_count, index, nodes, identifiers, err);
+				if(*err) goto RET;
+				dynarr_push(&elems, &(size_t) { nodes->count - 1}, err);
+				if(*err) goto RET;
+
+				*index += 1;
+
+				if(tokens[*index].type != TOKEN_COMMA && tokens[*index].type != TOKEN_RCURLY) {
+					fprintf(stderr, "Error: Expected ',' found ");
+					lexer_print_token_to_file(stderr, &tokens[*index], identifiers);
+					*err = ERROR_UNEXPECTED_DATA;
+					goto RET;
+				}
+			}
+
+			dynarr_push(
+				nodes,
+				&(AstNode) {
+					.array_lit = {
+						.type = AST_ARRAY_LIT,
+						.debug_info = array_lit_debug,
+						.elem_count = elems.count,
+						.elems = elems.data,
+					},
+				},
+				err
+			);
+			if(*err) goto RET;
+
+			dynarr_push(&free_terms, &(size_t) { nodes->count - 1}, err);
+			if(*err) goto RET;
+			break;
+
 		case TOKEN_LPAREN:
 			dynarr_push(&operator_stack, &tokens[*index], err);
 			if(*err) goto RET;
@@ -157,6 +199,54 @@ static void parse_expr(
 			}
 
 			operator_stack.count -= 1;
+			break;
+
+		case TOKEN_LSQUARE:
+			do {} while(0);
+
+			DebugInfo subscript_debug = tokens[*index].debug.debug_info;
+
+			if(!dynarr_from_back(&free_terms, 0)) {
+				fprintf(stderr, "Error: Expected Array or Slice for Subscript at ");
+				lexer_print_debug_to_file(stderr, &subscript_debug);
+				fprintf(stderr, "\n");
+				*err = ERROR_UNEXPECTED_DATA;
+				goto RET;
+			}
+
+			size_t arr = *(size_t*)dynarr_pop(&free_terms);
+			
+			*index += 1;
+			parse_expr(tokens, token_count, index, nodes, identifiers, err);
+			if(*err) goto RET;
+
+			*index += 1;
+
+			if(tokens[*index].type != TOKEN_RSQUARE) {
+				fprintf(stderr, "Error: Expected ']' after '[', found ");
+				lexer_print_token_to_file(stderr, &tokens[*index], identifiers);
+				*err = ERROR_UNEXPECTED_DATA;
+				goto RET;
+			}
+
+			size_t arr_index = nodes->count - 1;
+
+			dynarr_push(
+				nodes,
+				&(AstNode) {
+					.subscript = {
+						.type = AST_SUBSCRIPT,
+						.debug_info = subscript_debug,
+						.arr = arr,
+						.index = arr_index,
+					},
+				},
+				err
+			);
+			if(*err) goto RET;
+
+			dynarr_push(&free_terms, &(size_t) {nodes->count - 1}, err);
+			if(*err) goto RET;
 			break;
 
 		case TOKEN_AMPERSAND:
@@ -442,6 +532,8 @@ static void parse_expr(
 
 		case TOKEN_SEMICOLON:
 		case TOKEN_COMMA:
+		case TOKEN_RSQUARE:
+		case TOKEN_RCURLY:
 			terminated = true;
 			*index -= 2;
 			break;
@@ -491,6 +583,12 @@ RET:
 	dynarr_clean(&operator_stack);
 }
 
+static void parse_type(
+	const Token *tokens, size_t token_count, size_t *index,
+	DynArr *nodes,
+	char *const *identifiers,
+	Error *err
+);
 
 static void parse_block(
 	const Token *tokens, size_t token_count, size_t *index,
@@ -572,25 +670,7 @@ static void parse_block(
 
 			*index += 1;
 
-			if(tokens[*index].type != TOKEN_IDENT) {
-				fprintf(stderr, "Expected Identifier, found ");
-				lexer_print_token_to_file(stderr, &tokens[*index], identifiers);
-				fprintf(stderr, "\n");
-				*err = ERROR_UNEXPECTED_DATA;
-				goto RET;
-			}
-
-			dynarr_push(
-				nodes,
-				&(AstNode) {
-					.ident = {
-						.type = AST_IDENT,
-						.debug_info = tokens[*index].debug.debug_info,
-						.id = tokens[*index].ident.id,
-					},
-				},
-				err
-			);
+			parse_type(tokens, token_count, index, nodes, identifiers, err);
 			if(*err) goto RET;
 
 			size_t data_type = nodes->count - 1; 
@@ -908,13 +988,13 @@ static void parse_type(
 		*index += 1;
 		switch(tokens[*index].type) {
 		case TOKEN_CONST:
-			access_modifier = AST_CONST_POINTER;
+			access_modifier = AST_POINTER_CONST;
 			break;
 		case TOKEN_VAR:
-			access_modifier = AST_VAR_POINTER;
+			access_modifier = AST_POINTER_VAR;
 			break;
 		case TOKEN_ABYSS:
-			access_modifier = AST_ABYSS_POINTER;
+			access_modifier = AST_POINTER_ABYSS;
 			break;
 		default:
 			fprintf(stderr, "Expected Access Modifier for Pointer Type found ");
@@ -943,6 +1023,132 @@ static void parse_type(
 		);
 		if(*err) goto RET;
 		break;
+	
+	case TOKEN_LSQUARE:
+		*index += 1;
+		switch(tokens[*index].type) {
+		case TOKEN_RSQUARE:
+			*index += 1;
+
+			AstNodeType access;
+			switch(tokens[*index].type) {
+			case TOKEN_CONST:
+				access = AST_SLICE_CONST;
+				break;
+			case TOKEN_VAR:
+				access = AST_SLICE_VAR;
+				break;
+			case TOKEN_ABYSS:
+				access = AST_SLICE_ABYSS;
+				break;
+			default:
+				fprintf(stderr, "Error: Expected Access Modifier for Slice Type, found ");
+				lexer_print_token_to_file(stderr, &tokens[*index], identifiers);
+				*err = ERROR_UNEXPECTED_DATA;
+				goto RET;
+			}
+
+			*index += 1;
+
+			parse_type(tokens, token_count, index, nodes, identifiers, err);
+			if(*err) goto RET;
+
+			size_t slice_base = nodes->count - 1;
+
+			dynarr_push(
+				nodes,
+				&(AstNode) {
+					.slice = {
+						.type = access,
+						.debug_info = location,
+						.elem_type = slice_base,
+					},
+				},
+				err
+			);
+			if(*err) goto RET;
+			break;
+
+		case TOKEN_INT_LIT:
+			if(tokens[*index].int_lit.val == 0) {
+				fprintf(stderr, "Error: Cannot have Zero-Length Array at ");
+				lexer_print_debug_to_file(stderr, &tokens[*index].debug.debug_info);
+				*err = ERROR_UNEXPECTED_DATA;
+				goto RET;
+			}
+
+			const intmax_t len = tokens[*index].int_lit.val;
+
+			*index += 1;
+
+			if(tokens[*index].type != TOKEN_RSQUARE) {
+				fprintf(stderr, "Error: Expected ']', found ");
+				lexer_print_token_to_file(stderr, &tokens[*index], identifiers);
+				*err = ERROR_UNEXPECTED_DATA;
+				goto RET;
+			}
+
+			*index += 1;
+
+			parse_type(tokens, token_count, index, nodes, identifiers, err);
+			if(*err) goto RET;
+
+			size_t arr_type = nodes->count - 1;
+
+			dynarr_push(
+				nodes,
+				&(AstNode) {
+					.array = {
+						.type = AST_ARRAY,
+						.debug_info = location,
+						.elem_type = arr_type,
+						.len = len,
+					},
+				},
+				err
+			);
+			if(*err) goto RET;
+			break;
+
+		case TOKEN_UNDERSCORE:
+			*index += 1;
+
+			if(tokens[*index].type != TOKEN_RSQUARE) {
+				fprintf(stderr, "Error: Expected ']', found ");
+				lexer_print_token_to_file(stderr, &tokens[*index], identifiers);
+				*err = ERROR_UNEXPECTED_DATA;
+				goto RET;
+			}
+
+			*index += 1;
+
+			parse_type(tokens, token_count, index, nodes, identifiers, err);
+			if(*err) goto RET;
+
+			arr_type = nodes->count - 1;
+
+			dynarr_push(
+				nodes,
+				&(AstNode) {
+					.array = {
+						.type = AST_ARRAY,
+						.debug_info = location,
+						.elem_type = arr_type,
+						.len = 0,
+					},
+				},
+				err
+			);
+			if(*err) goto RET;
+			break;
+
+		default:
+			fprintf(stderr, "Error: Expected Array or Slice Type, found ");
+			lexer_print_token_to_file(stderr, &tokens[*index], identifiers);
+			*err = ERROR_UNEXPECTED_DATA;
+			goto RET;
+		}
+		break;
 
 	case TOKEN_LPAREN:
 		*index += 1;
@@ -954,7 +1160,6 @@ static void parse_type(
 					&tokens[*index],
 					identifiers
 				);
-				fprintf(stderr, " instead.\n");
 				*err = ERROR_UNEXPECTED_DATA;
 				goto RET;
 			}
@@ -1169,6 +1374,10 @@ void parser_clean_ast(AstNode *nodes, size_t node_count)
 		case AST_FN_CALL:
 			free(nodes[i].fn_call.args);
 			break;
+		
+		case AST_ARRAY_LIT:
+			free(nodes[i].array_lit.elems);
+			break;
 
 		case AST_NONE:
 		case AST_FN_DEF:
@@ -1186,10 +1395,15 @@ void parser_clean_ast(AstNode *nodes, size_t node_count)
 		case AST_MUL_ASSIGN:
 		case AST_DIV_ASSIGN:
 		case AST_ADDR:
-		case AST_CONST_POINTER:
-		case AST_VAR_POINTER:
-		case AST_ABYSS_POINTER:
+		case AST_POINTER_CONST:
+		case AST_POINTER_VAR:
+		case AST_POINTER_ABYSS:
 		case AST_DEREF:
+		case AST_ARRAY:
+		case AST_SLICE_CONST:
+		case AST_SLICE_VAR:
+		case AST_SLICE_ABYSS:
+		case AST_SUBSCRIPT:
 			break;
 		}
 	}
@@ -1320,20 +1534,48 @@ void parser_print_ast_to_file(
 			fprintf(file, "&%zi", nodes[i].addr.base);
 			break;
 		
-		case AST_CONST_POINTER:
+		case AST_POINTER_CONST:
 			fprintf(file, "&const %zi", nodes[i].pointer_type.base_type);
 			break;
 
-		case AST_VAR_POINTER:
+		case AST_POINTER_VAR:
 			fprintf(file, "&var %zi", nodes[i].pointer_type.base_type);
 			break;
 
-		case AST_ABYSS_POINTER:
+		case AST_POINTER_ABYSS:
 			fprintf(file, "&abyss %zi", nodes[i].pointer_type.base_type);
 			break;
 
 		case AST_DEREF:
 			fprintf(file, "*%zi", nodes[i].deref.ptr);
+			break;
+
+		case AST_ARRAY:
+			fprintf(file, "[%zi]%zi", nodes[i].array.len, nodes[i].array.elem_type);
+			break;
+
+		case AST_SLICE_CONST:
+			fprintf(file, "[]const %zi", nodes[i].slice.elem_type);
+			break;
+
+		case AST_SLICE_VAR:
+			fprintf(file, "[]var %zi", nodes[i].slice.elem_type);
+			break;
+
+		case AST_SLICE_ABYSS:
+			fprintf(file, "[]abyss %zi", nodes[i].slice.elem_type);
+			break;
+
+		case AST_SUBSCRIPT:
+			fprintf(file, "%zi[%zi]", nodes[i].subscript.arr, nodes[i].subscript.index);
+			break;
+
+		case AST_ARRAY_LIT:
+			fprintf(file, "{");
+			for(size_t j = 0; j < nodes[i].array_lit.elem_count; j++) {
+				fprintf(file, "%zi, ", nodes[i].array_lit.elems[j]);
+			}
+			fprintf(file, "}");
 			break;
 		}
 		fprintf(file, "\n");

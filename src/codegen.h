@@ -42,6 +42,7 @@ typedef struct {
 	ptrdiff_t id;
 	Type type; 
 	bool mut;
+	ptrdiff_t start; //- == on stack, 0 == reg param, + == stack param
 } Var;
 
 typedef struct {
@@ -56,6 +57,7 @@ typedef struct {
 
 typedef struct {
 	FILE *output;
+	PlatformType plat;
 
 	const AstNode *nodes;
 	size_t node_count;
@@ -67,6 +69,7 @@ typedef struct {
 void codegen_init(
 		CodeGen *cg,
 		FILE *output,
+		PlatformType plat,
 		const AstNode *nodes,
 		size_t node_count,
 		char *const *identifiers
@@ -74,7 +77,6 @@ void codegen_init(
 
 void codegen_clean(const CodeGen *cg);
 
-void codegen_gen(CodeGen *cg, bool exec, PlatformType plat, Error *err);
+void codegen_gen(CodeGen *cg, bool exec, Error *err);
 
-void codegen_gen_linux(CodeGen *cg, bool exec, Error *err);
-void codegen_gen_windows(CodeGen *cg, bool exec, Error *err);
+void codegen_asm(CodeGen *cg, bool exec, Error *err);

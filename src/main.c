@@ -219,9 +219,9 @@ int main(int argc, char **argv)
 		goto RET;
 	}
 
-	codegen_init(&codegen, asm_file, nodes, node_count, identifiers);
+	codegen_init(&codegen, asm_file, options.platform, nodes, node_count, identifiers);
 
-	codegen_gen(&codegen, !options.do_not_link, options.platform, &err);
+	codegen_gen(&codegen, !options.do_not_link, &err);
 	if(err) goto RET;
 
 	fclose(asm_file);

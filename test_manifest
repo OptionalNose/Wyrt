@@ -31,4 +31,14 @@
 {
 	.file = "failing_types.wyrt",
 	.should_fail = true,
+},
+
+{
+	.file = "array_and_slice.wyrt",
+	.exitcode = 46,
+}, 
+
+{
+	.file = "failing_array_len_mismatch.wyrt",
+	.should_fail = true,
 }

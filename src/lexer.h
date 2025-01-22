@@ -39,6 +39,11 @@ typedef enum {
 	TOKEN_COMMA,
 
 	TOKEN_AMPERSAND,
+
+	TOKEN_UNDERSCORE,
+	
+	TOKEN_LSQUARE,
+	TOKEN_RSQUARE,
 } TokenType;
 
 typedef struct {

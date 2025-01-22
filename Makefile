@@ -46,6 +46,12 @@ run: all
 debug:
 	$(CC) -O0 -g $(CFLAGS) $(LDFLAGS) -o $(APPNAME)_Debug $(SRC)
 
+test: test_runner release $(APPNAME)
+	@./test_runner
+
+test_runner: test_runner.c test_manifest
+	$(CC) test_runner.c -o test_runner
+
 # Builds the app
 $(APPNAME): $(OBJ)
 	@echo Linking...

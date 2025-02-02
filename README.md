@@ -23,7 +23,7 @@ fn foo(str: &const u8) u8
 ```
 The idea is that the better the programmer can understand what a function does and it's requirements, the less likely they are to create bugs.
 
-It is called "wyrt" based off of the old-english word for "root", because it encourages you to get 'down in the dirt'.
+It is called "wyrt" based off of the old-english word for "root", because it encourages you to get 'down in the dirt' and do-it-yourself.
 It is _supposed_ to be pronounced "woo-rt", if you go by the original old-english.
 I find it easier to pronounce it "whir-t" or "wee-rt". 
 
@@ -45,8 +45,8 @@ These Sanitizers at times do not like the high-levels of recursion throughout th
 If you get a Segfault message without any information from the Sanitizers, then it is highly likely they are the culprit.
 Running the program repeatedly, or inside a debugger, will fix the problem.
 
-The only dependency is `libc`, so the compiler should be able to run on any platform, although currently only Linux x86_64 codegen is supported.
-(Windows coming soon, hopefully). I don't have a Mac, so I can't really support it as a platform.
+The only dependency is `libc`, so the compiler should be able to run on any platform, although currently only Linux and Windows x86_64 codegen is supported.
+I don't have a Mac, so I can't really support it as a platform.
 See below for a possible work around.
 
 ---
@@ -61,14 +61,14 @@ to display the builtin help, run `wyrt --help` or `wyrt -h`
 Currently multiple input files and glob-patterns are not supported.
 
 The compiler only produces assembly files, so it assumes that you have `nasm` and `ld` installed to create executable binaries.
-If you do not have these installed, you can make it just output the assembly by `wyrt -S` (it will output nasm-syntax asm, so you will probably need to make some edits on the outputted file to get it to compile with GNU's assembler or others).
-To only compile, but not link, use `wyrt -c`. The created object files can be linked normally (assuming everything else uses the System V ABI Calling Convention).
+If you do not have these installed, you can make it just output the assembly by `wyrt -S`
+(it will output nasm-syntax asm, so you will probably need to make some manual and scripted edits on the outputted file to get it to compile with GNU's assembler or others).
 
-Currently, only Linux x86_64 codegen is supported.
+To only compile, but not link, use `wyrt -c`. The created object files can be linked normally.
 
 You *might* be able to get it to work on other platforms by compiling to an object file and then linking with `libc`, assuming you define the `main` function somewhere.
-The assembly it outputs uses the System V ABI Calling Convention.
-So as long as the `libc` you are using follows the System V ABI Calling Convention, it *should* work.
+For any non-Windows platform, you can run `wyrt --target=linux -c` to generate a SystemV-ABI object file for *any* target.
+So as long as the `libc` you are using follows the System V ABI Calling Convention, you *should* be able to get a functioning executable.
 
 ---
 

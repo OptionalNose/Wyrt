@@ -1,22 +1,24 @@
 \documentclass{article}
 \usepackage{bm}
+\usepackage[T1]{fontenc}
 \title{Wyrt}
 \author{Jacob Beveridge}
 \date{v0.1 WIP}
 \begin{document}
-\newcommand{\ret}{$\bm{-\!\!>}$}
 
 \maketitle
 \tableofcontents
 \section{About This Document}
 	This Document defines Wyrt version 0.1 Source Code.
 	\subsection{Tooling} The `Compiler' is any program that takes Wyrt Source Code as input and produces either an object or executable file as output. An `Error' is a diagnostic message produced by the Compiler upon the input of erroneous Source Code, accompianied by the Compiler not producing output.
-	\subsection{Notation} Any text in italics is a formula that defines syntax. Any non-bolded text in a formula represents some non-fixed text. Any bolded text in a formula represents fixed text. Unless otherwise stated: two pieces of non-fixed text must be separated by at least one whitespace character, and a piece of fixed next need not but may be separated from any surrounding non-fixed text by any amount of whitespace. Square Brackets (\textit{[]}) surround optional text. An Asterisk(\textit(*)) means that the preceding optional text may be repeated any number of times, including zero.
+	\subsection{Notation} Any text in italics is a formula that defines syntax. Any non-bolded text in a formula represents some non-fixed text. Any bolded text in a formula represents fixed text. Unless otherwise stated: two pieces of non-fixed text must be separated by at least one whitespace character, and a piece of fixed next need not but may be separated from any surrounding non-fixed text by any amount of whitespace. Square Brackets (\textit{[]}) surround optional text. An Asterisk(\textit*) means that the preceding optional text may be repeated any number of times, including zero (Trailing Commas are omitted). A pipe (\textit{|}) represents an either-or option. 
 \section{Definitions}
 	\begin{description}
-	\item[Module] The contents of a Wyrt source file. Comprised of Declarations.
-	\item[Declaration] Of the form \textit{access identifier \textbf{:} type [\textbf{=} value]\textbf{;}}. Creates a new Identifier \textit{identifier} which refers to a Value of Type \textit{type} and can be accessed according to Access Modifier \textit{access}. If a Value \textit{value} is present, then the Value of \textit{identifier} is equal to \textit{value} until \textit{identifier} is Modified and we say that \textit{identifier} is `initialized' to \textit{value}. If \textit{type} is a Function Type then \textit{identifier} is a Function and the Compiler shall issue an Error if \textit{access} is not \textit{const}. The Compiler shall issue an Error if \textit{access} is \textit{const} and \textit{value} is not present, or if the Type of \textit{value} is not compatible with \textit{type}.
-	\item[Access Modifier] \textit{const}.
+	\item[Module] The contents of a Wyrt source file. Comprised of Function Definitions.
+		
+	\item[Function Definition] Of the form \textit{\textbf{fn} name \textbf ( [ argname: argtype, \textbf ] ) returntype \textbf \{ [statement]* \textbf \} } \\
+		Where `name' is an identifier and the name of the function, `argname' and `argtype' are the name (identifier) and type of the argument respectively, `returntype' is the type returned by the function, and `statement' is a statement.
+
 	\item[Identifier] A sequence of characters starting with any of:
 		\begin{quote}
 		$\_$ @ A B C D E F G H I J K L M N O P Q R S T U V W X Y Z a b c d e f g h i j k l m n o p q r s t u v w x y z
@@ -26,38 +28,125 @@
 		$\_$ @ A B C D E F G H I J K L M N O P Q R S T U V W X Y Z a b c d e f g h i j k l m n o p q r s t u v w x y z 0 1 2 3 4 5 6 7 8 9
 		\end{quote}
 		The Compiler shall issue an error if it encounters an Identifier lexicographically identical to a Keyword. Some Identifiers have a special meaning or must be used a certain way; see Behavior, Special Identifiers.
-	\item[Type] Either:
+
+	\item[Type] One of
 		\begin{description}
-		\item[Data Type] One of:
+		\item[Primitive] One of:
 			\begin{quote}
-			void char u8 u16 u32 u64 u128 u256 i8 i16 i32 i64 i128 i256 f16 f32 f64 f128 
+			void u8 u16 u32 u64
 			\end{quote}
-			Two Data Types are `equivalent' if and only if they are the same. Two Data Types are `compatible' if and only if they are equivalent.
-		\item[Function Type] Either of the form \textit{\textbf{() \ret} type} or \textit{(identifier\textbf{:} type [\textbf{,} (identifier\textbf{:} type]*) \ret type}, where each \textit{type} is a potentially unique Data Type. In the First Case, the Function Type has no Parameters. In the Second Case, each \textit{identifier} must be lexicographically unique, and is said to be a Parameter of Type \textit{type} of the Function Type. The Compiler shall issue an Error if the Type of any Parameter is \textit{void}. In both cases, the \textit{type} after the \textit{\ret} is the Return Type of the Function Type. Two Function Types are `equivalent' if and only if they have an equal number of Parameters, each matching Parameter has an equivalent Data Type, and both Return Types are equivalent. Two Function Types are `compatible' if and only if they are equivalent.
+			Where `void' is a zero-sized object.
+				`u8', `u16', `u32', and `u64' (the integer types) are unsigned integers of 8, 16, 32, and 64 bits respectively.
+
+		\item[Pointer] \textit{\textbf \& access type}
+			Represents the address of an object of type `type', able to be accessed according to access-modifier `access'.
+
+		\item[Array] \textit{\textbf [ intlit \textbf | $\_$ ] type}
+			Represents `intlit' number of objects of type `type'. If an underscore is used, the length of the array is implied from its initializer, which must be present.
+
+		\item[Slice] \textit{\textbf{[]} access type}
+			Represents an object comprised of a length `len' (u64) and a pointer to a `len' number of objects of type `type' able to be accessed by `access'.
+
 		\end{description}
-		A Data Type and a Function type are never equivalent nor compatible.
-	\item[Value] A Block.
-	\item[Modification] Change the Value of an Identifier, potentially to an equivalent Value.
-	\item[Keyword] An Access Modifier, or any of:
+			Any Data Type that will implicitly cast into another Data Type is said to be compatible with that Data Type.
+			Any `var'-qualified Data Type (pointer or slice) will implicitly cast to an equivalent const-qualified or abyss-qualified Data Type. 
+			Any integer type will implicitly cast to a larger integer type of the same signedness.
+	\item[Access Modifier] \hfill \\
+		\begin{description}
+		\item[const] Read-Only. The Compiler shall issue an error if it encounters an attempted write to a constant variable, pointer, or slice.
+		\item[abyss] Write-Only. The Compiler shall issue an error if it encounters an attempted read from an abyssal variable, pointer, or slice.
+		\item[var] Read-Write. Any `var'-qualified value will implicitly cast to a `const'- or `abyss'-qualified value.
+		\end{description}
+
+	\item[Keyword] An Access Modifier, Primitive Type, or any of:
 		\begin{quote}
-		return
+		fn return
 		\end{quote}
-	\item[Block] Of the form \textit{\textbf{$\{$} statements \textbf{$\}$}}, where \textit{statements} is any number of Statements. The Type of a Block is compatible with all Function Types, and incompatible with all Data Types.
+
 	\item[Statement] One of:
 		\begin{description}
-		\item[Return Statement] \hfill \\ Of the form \textit{\textbf{return} value} where \textit{value} is a Value and is called the `Return Value'. The Compiler shall issue an Error if the Type of \textit{value} is not compatible with the Return Type of the Function which is initialized to the enclosing Block.
+		\item[Return Statement] \hfill \textit{\textbf{return} value} \\
+			Where \textit{value} is a Value and is called the `Return Value'.
+			The Compiler shall issue an Error if the Type of \textit{value} is not compatible with the Return Type of the Function Definition in which this statement is located.
+
+		\item[Variable Declaration] \hfill \textit{access name \textbf : type [$=$ value]} \\
+			Where `access' is an access modifier, `name' is an identifier, and `value' is a value.
+			If `access' is `const', then the Compiler will issue an error if `value' is not present.
+			Declares a Variable named `name', and if present, initializes its value to `value'.
+
+		\item[Assignment]
+			\hfill 1. \textit{lvalue \textbf = value} \\
+			{}\hfill 2. \textit{lvalue \textbf += value} \\
+			{}\hfill 3. \textit{lvalue \textbf -= value} \\
+			{}\hfill 4. \textit{lvalue \textbf *= value} \\
+			{}\hfill 5. \textit{lvalue \textbf /= value} \\
+			(1) Assigns Lvalue `lvalue' to `value'. The Compiler will issue an error if `lvalue' is `const'-qualified. \\
+			(2) Assigns Lvalue `lvalue' to 'lvalue $+$ value'. The Compiler will issue an error if `lvalue' is not `const'-qualified.\\
+			(3) Assigns Lvalue `lvalue' to 'lvalue $-$ value'. The Compiler will issue an error if `lvalue' is not `const'-qualified.\\
+			(4) Assigns Lvalue `lvalue' to 'lvalue $*$ value'. The Compiler will issue an error if `lvalue' is not `const'-qualified.\\
+			(5) Assigns Lvalue `lvalue' to 'lvalue $/$ value'. The Compiler will issue an error if `lvalue' is not `const'-qualified.\\
+
+		\item[Function Call] \hfill \textit{fnname \textbf ( [value,]* \textbf ) } \\
+			Passes each `value' as an argument to the function `fnname' and executes it. The Compiler will issue an error if the type of each `value' is not compatible with the type of the argument to which it is passed.
+
 		\end{description}
 		Follwed by a Semicolon(;). 
-	\end{description}
-\subsection{Special Identifiers}
-	\begin{itemize}
-	\item[] There are several ``builtin'' Types which are predefined Identifiers; see Definitions, Data Type. The Compiler shall issue an Error if any of these Identifiers are used as anything other than a Data Type.
-	\item[] ``main'' must be Declared with a Function Type of ``() \ret u8''. 
-	\end{itemize}
-\section{Behavior}
-	\subsection{Entry and Exit} The Program starts at the first line of ``main'' and proceeds statement by statement. The Program terminates when the ``main'' function returns.
-	\subsection{Statements}
+
+	\item[Value]
+		One of:
 		\begin{description}
-		\item[Return Statement] Upon execution, causes the enclosing function to terminate and evaluate to the Return Value of the Return Statement.
+		\item[Integer Literal] An integer.
+		\item[Identifier] The value of the variable `identifier'. The Compiler will issue an error if the variable is `abyss'-qualified.
+		\item[Subscript] \textit{ident\textbf[ value \textbf]} The value of the `value'th object from the start of the array or slice `ident'.
+			The Compiler will issue an error if `ident' is `abyss'-qualified.
+			The Compiler will issue an error if the type of `value' is not an integer type.
+
+		\item[Expression]
+			One of:
+			\begin{description}
+			\item[\textit{lhs \textbf + rhs}] Adds value `lhs' to value `rhs'
+			\item[\textit{lhs \textbf - rhs}] Subtracts value `rhs' from value `lhs'
+			\item[\textit{lhs \textbf * rhs}] Multiplies value `lhs' by value `rhs'
+			\item[\textit{lhs \textbf / rhs}] Divides value `lhs' by value `rhs'. On integer types the result is truncated towards zero.
+			\item[\textbf ( \textit{value} \textbf )] The Value of `value'.
+			\end{description}
+			Expressions are parsed according to the rules of Operator Precedence.
+
+		\item[Address] \textbf \& \textit{ident} \\
+			The Address the variable `ident' is stored in. If `ident' is an array, this value is a slice whose length is that of the array.
+			Else, this value is a pointer.
+			The resulting value has the same access-qualification as `ident'.
+
+		\item[Dereference] \textbf * \textit{value} \\
+			The Value at the address `value'. The Compiler will issue an error if the type of `value' is not a pointer type, or is an `abyss'-qualified pointer type.
+
 		\end{description}
+
+	\item[Lvalue] \hfill \\
+		\begin{description}
+		\item[Identifier] The value of the variable `identifier'. The Compiler will issue an error if the variable is `const'-qualified.
+
+		\item[Subscript] \textit{arr\textbf[ index \textbf]} \\
+			The value of the `index'th object from the start of the array or slice `arr'.
+			The Compiler will issue an error if `arr' is `const'-qualified.
+			The Compiler will issue an error if the type of 'index' is not an integer type.
+
+		\item[Dereference] \textbf * \textit{value} \\
+			The Value at the address of `value'. The Compiler will issue an error if the type of `value' is not a pointer type, or is a `const'-qualified pointer type.
+
+		\end{description}
+	\item[Operator Precedence]
+		Expressions are parsed according to the following list. Operators in the categories higher up are parsed before operators in lower categories.
+		Operators in the same category are parsed left-to-right (left-associative).
+		\begin{itemize}
+		\item $[]$ (subscript)
+		\item \& $*$ (unary dereference)
+		\item $/$ $*$ (binary multiplication)
+		\item $+$ $-$
+		\end{itemize}
+	\end{description}
+
+\section{Behavior}
+	\subsection{Entry and Exit} The Program starts by executing the function ``main''. The Program terminates when the ``main'' function returns.
+		The ``main'' function must have take zero arguments and return a u8.
 \end{document}

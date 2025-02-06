@@ -344,6 +344,7 @@ static void gen_fn_call(CodeGen *cg, size_t index, Scope *scope, Error *err)
 
 		size_t reg_params = 0;
 		size_t end_of_regs = 0;
+		bool slice_split = false; 
 		for(size_t i = 0; i < arg_count; i++) {
 			Type type = type_from_ast(&scope->tc, cg->nodes, sig.args[i], err);
 			if(*err) goto RET;
@@ -352,7 +353,7 @@ static void gen_fn_call(CodeGen *cg, size_t index, Scope *scope, Error *err)
 			if(reg_params <= 5 && param_size <= 8) {
 				gen_expr(cg, call->fn_call.args[i], type, scope, err);
 				if(*err) goto RET;
-				switch(i) {
+				switch(reg_params) {
 				case 0:
 					FPUTS_OR_ERR(cg->output, "mov rdi, rax\n");
 					break;
@@ -373,6 +374,67 @@ static void gen_fn_call(CodeGen *cg, size_t index, Scope *scope, Error *err)
 					break;
 				}
 				reg_params += 1;
+			} else if(
+				type.type == TYPE_SLICE_CONST
+				|| type.type == TYPE_SLICE_VAR
+				|| type.type == TYPE_SLICE_ABYSS
+			) {
+				switch(reg_params) {
+				case 0:
+					gen_expr(cg, call->fn_call.args[i], type, scope, err);
+					if(*err) goto RET;
+					FPUTS_OR_ERR(
+						cg->output,
+						"pop rdi\n"
+						"pop rsi\n"
+					);
+					reg_params += 2;
+					break;
+				case 1:
+					gen_expr(cg, call->fn_call.args[i], type, scope, err);
+					if(*err) goto RET;
+					FPUTS_OR_ERR(
+						cg->output,
+						"pop rsi\n"
+						"pop rdx\n"
+					);
+					reg_params += 2;
+					break;
+				case 2:
+					gen_expr(cg, call->fn_call.args[i], type, scope, err);
+					if(*err) goto RET;
+					FPUTS_OR_ERR(
+						cg->output,
+						"pop rdx\n"
+						"pop rcx\n"
+					);
+					reg_params += 2;
+					break;
+				case 3:
+					gen_expr(cg, call->fn_call.args[i], type, scope, err);
+					if(*err) goto RET;
+					FPUTS_OR_ERR(
+						cg->output,
+						"pop rcx\n"
+						"pop r8\n"
+					);
+					reg_params += 2;
+					break;
+				case 4:
+					gen_expr(cg, call->fn_call.args[i], type, scope, err);
+					if(*err) goto RET;
+					FPUTS_OR_ERR(
+						cg->output,
+						"pop r8\n"
+						"pop r9\n"
+					);
+					reg_params += 2;
+					break;
+				case 5:
+					reg_params += 1;
+					slice_split = true;
+					break;
+				}
 			}
 
 			if(reg_params > 5) {
@@ -403,6 +465,21 @@ static void gen_fn_call(CodeGen *cg, size_t index, Scope *scope, Error *err)
 			if(i == 0) break;
 		}
 
+		if(slice_split) {
+			Type type = type_from_ast(&scope->tc, cg->nodes, sig.args[end_of_regs], err);
+			if(*err) goto RET;
+			gen_expr(cg, call->fn_call.args[end_of_regs], type, scope, err);
+			if(*err) goto RET;
+
+			FPUTS_OR_ERR(
+				cg->output,
+				"pop r9\n"
+			);
+			// len left on stack, where it needs to be as arg
+			
+			stack_arg_size += 8;
+		}
+
 		if(stack_arg_size) {
 			FPRINTF_OR_ERR(
 				cg->output,
@@ -425,6 +502,7 @@ static void gen_fn_call(CodeGen *cg, size_t index, Scope *scope, Error *err)
 
 		reg_params = 0;
 		end_of_regs = 0;
+		slice_split = false;
 		for(size_t i = 0; i < arg_count; i++) {
 			Type type = type_from_ast(&scope->tc, cg->nodes, sig.args[i], err);
 			if(*err) goto RET;
@@ -448,6 +526,47 @@ static void gen_fn_call(CodeGen *cg, size_t index, Scope *scope, Error *err)
 					break;
 				}
 				reg_params += 1;
+			} else if(
+				type.type == TYPE_SLICE_CONST
+				|| type.type == TYPE_SLICE_ABYSS
+				|| type.type == TYPE_SLICE_VAR
+			) {
+				switch(reg_params) {
+				case 0:
+					gen_expr(cg, call->fn_call.args[i], type, scope, err);
+					if(*err) goto RET;
+					FPUTS_OR_ERR(
+						cg->output,
+						"pop rcx\n"
+						"pop rdx\n"
+					);
+					reg_params += 2;
+					break;
+				case 1:
+					gen_expr(cg, call->fn_call.args[i], type, scope, err);
+					if(*err) goto RET;
+					FPUTS_OR_ERR(
+						cg->output,
+						"pop rdx\n"
+						"pop r8\n"
+					);
+					reg_params += 2;
+					break;
+				case 2:
+					gen_expr(cg, call->fn_call.args[i], type, scope, err);
+					if(*err) goto RET;
+					FPUTS_OR_ERR(
+						cg->output,
+						"pop r8\n"
+						"pop r9\n"
+					);
+					reg_params += 2;
+					break;
+				case 3:
+					slice_split = true;
+					reg_params += 1;
+					break;
+				}
 			}
 
 			if(reg_params > 3) {
@@ -477,6 +596,21 @@ static void gen_fn_call(CodeGen *cg, size_t index, Scope *scope, Error *err)
 			stack_arg_size += param_size > 8 ? param_size : 8;
 
 			if(i == 0) break;
+		}
+
+		if(slice_split) {
+			Type type = type_from_ast(&scope->tc, cg->nodes, sig.args[end_of_regs], err);
+			if(*err) goto RET;
+			gen_expr(cg, call->fn_call.args[end_of_regs], type, scope, err);
+			if(*err) goto RET;
+
+			FPUTS_OR_ERR(
+				cg->output,
+				"pop r9\n"
+			);
+			// len left on stack, where it needs to be as arg
+			
+			stack_arg_size += 8;
 		}
 
 		if(stack_arg_size) {

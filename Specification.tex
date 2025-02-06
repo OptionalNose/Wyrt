@@ -149,4 +149,6 @@
 \section{Behavior}
 	\subsection{Entry and Exit} The Program starts by executing the function ``main''. The Program terminates when the ``main'' function returns.
 		The ``main'' function must have take zero arguments and return a u8.
+	\subsection{ABI} Function arguments are passed according to the system C-ABI.
+		For the purposes of function calls, slice types are treated as two seperate arguments `sliceptr' and `slicelen' in that order.
 \end{document}

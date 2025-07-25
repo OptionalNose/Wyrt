@@ -16,3 +16,6 @@ ast
 asm
 exitcode
 test_runner
+.ccls-cache/
+a.ll
+ir

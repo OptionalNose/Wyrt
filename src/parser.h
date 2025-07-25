@@ -41,6 +41,10 @@ typedef enum {
 	AST_SUBSCRIPT,
 
 	AST_ARRAY_LIT,
+
+	AST_STRUCT_TYPE,
+	AST_STRUCT_LIT,
+	AST_STRUCT_ACCESS,
 } AstNodeType;
 
 typedef union {
@@ -66,11 +70,11 @@ typedef union {
 		size_t arg_count;
 		size_t ret_type;
 	} fn_type;
-	
+
 	struct {
 		AstNodeType type;
 		DebugInfo debug_info;
-		size_t *statements; 
+		size_t *statements;
 		size_t statement_count;
 	} block;
 
@@ -105,7 +109,7 @@ typedef union {
 		size_t lhs;
 		size_t rhs;
 	} binop;
-	
+
 	struct {
 		AstNodeType type;
 		DebugInfo debug_info;
@@ -129,7 +133,7 @@ typedef union {
 		size_t var;
 		size_t expr;
 	} assign;
-	
+
 	struct {
 		AstNodeType type;
 		DebugInfo debug_info;
@@ -152,7 +156,7 @@ typedef union {
 		AstNodeType type;
 		DebugInfo debug_info;
 		size_t elem_type;
-		size_t len; //0 == _ 
+		size_t len; //0 == _
 	} array;
 
 	struct {
@@ -174,6 +178,29 @@ typedef union {
 		size_t elem_count;
 		size_t *elems;
 	} array_lit;
+
+	struct {
+		AstNodeType type;
+		DebugInfo debug_info;
+		size_t member_count;
+		size_t *member_name_ids;
+		size_t *member_types;
+	} struct_type;
+
+	struct {
+		AstNodeType type;
+		DebugInfo debug_info;
+		size_t member_count;
+		size_t *member_name_ids;
+		size_t *member_values;
+	} struct_lit;
+
+	struct {
+		AstNodeType type;
+		DebugInfo debug_info;
+		size_t parent;
+		size_t member_id;
+	} struct_access;
 } AstNode;
 
 void parser_gen_ast(

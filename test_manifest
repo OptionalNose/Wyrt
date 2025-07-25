@@ -41,4 +41,14 @@
 {
 	.file = "failing_array_len_mismatch.wyrt",
 	.should_fail = true,
-}
+},
+
+{
+	.file = "failing_struct_incompatible.wyrt",
+	.should_fail = true,
+},
+
+{
+	.file = "struct.wyrt",
+	.exitcode = 7,
+},

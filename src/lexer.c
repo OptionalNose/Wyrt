@@ -229,6 +229,9 @@ void lexer_tokenize(
 		case ']':
 			tok.type = TOKEN_RSQUARE;
 			goto NEXT_TOK;
+		case '.':
+			tok.type = TOKEN_PERIOD;
+			goto NEXT_TOK;
 		default:
 			break;
 		}
@@ -291,6 +294,9 @@ void lexer_tokenize(
 				goto NEXT_TOK;
 			} else if(strcmp(string_builder.data, "abyss") == 0) {
 				tok.type = TOKEN_ABYSS;
+				goto NEXT_TOK;
+			} else if(strcmp(string_builder.data, "struct") == 0) {
+				tok.type = TOKEN_STRUCT;
 				goto NEXT_TOK;
 			}
 
@@ -446,6 +452,12 @@ void lexer_print_token_to_file(
 		break;
 	case TOKEN_RSQUARE:
 		fprintf(file, "']'");
+		break;
+	case TOKEN_PERIOD:
+		fprintf(file, ".");
+		break;
+	case TOKEN_STRUCT:
+		fprintf(file, "struct");
 		break;
 	}
 	

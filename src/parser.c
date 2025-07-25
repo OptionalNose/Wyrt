@@ -32,7 +32,7 @@ static void parse_fn_call(
 
 		dynarr_push(&args, &(size_t) {nodes->count - 1}, err);
 		if(*err) goto RET;
-		
+
 		if(tokens[*index].type == TOKEN_RPAREN) break;
 
 		if(tokens[*index].type != TOKEN_COMMA) {
@@ -80,32 +80,48 @@ static AstNodeType binop_tok_to_ast(TokenType type)
 	}
 }
 
-static void binop_push(Token binop, DynArr *nodes, DynArr *free_terms, DynArr *operator_stack, Error *err)
+static void op_push(Token op, DynArr *nodes, DynArr *free_terms, DynArr *operator_stack, Error *err)
 {
 	size_t *rhs = dynarr_pop(free_terms);
-	size_t *lhs = dynarr_pop(free_terms);
+	size_t *lhs = NULL;
+	if(op.type != TOKEN_AMPERSAND) lhs = dynarr_pop(free_terms);
 
-	if(!lhs || !rhs) {
-		fprintf(stderr, "Malformed Expression at ");
-		lexer_print_debug_to_file(stderr, &binop.debug.debug_info);
+	if((op.type != TOKEN_AMPERSAND && !lhs) || !rhs) {
+		fprintf(stderr, "Malformed Expression (Not Enough Operands) at ");
+		lexer_print_debug_to_file(stderr, &op.debug.debug_info);
 		fprintf(stderr, "\n");
 		*err = ERROR_UNEXPECTED_DATA;
 		goto RET;
 	}
 
-	dynarr_push(
-		nodes,
-		&(AstNode) {
-			.binop = {
-				.type = binop_tok_to_ast(binop.type),
-				.debug_info = binop.debug.debug_info,
-				.lhs = *lhs,
-				.rhs = *rhs,
+	if(op.type != TOKEN_AMPERSAND) {
+		dynarr_push(
+			nodes,
+			&(AstNode) {
+				.binop = {
+					.type = binop_tok_to_ast(op.type),
+					.debug_info = op.debug.debug_info,
+					.lhs = *lhs,
+					.rhs = *rhs,
+				},
 			},
-		},
-		err
-	);
-	if(*err) goto RET;
+			err
+		);
+		if(*err) goto RET;
+	} else {
+		dynarr_push(
+			nodes,
+			&(AstNode) {
+				.addr = {
+					.type = AST_ADDR,
+					.debug_info = op.debug.debug_info,
+					.base = *rhs,
+				},
+			},
+			err
+		);
+		if(*err) goto RET;
+	}
 
 	dynarr_push(free_terms, &(size_t) {nodes->count - 1}, err);
 	if(*err) goto RET;
@@ -186,7 +202,7 @@ static void parse_expr(
 		case TOKEN_RPAREN:
 			while(top && top->type != TOKEN_LPAREN) {
 				operator_stack.count -= 1;
-				binop_push(*top, nodes, &free_terms, &operator_stack, err);
+				op_push(*top, nodes, &free_terms, &operator_stack, err);
 				if(*err) goto RET;
 
 				top = dynarr_from_back(&operator_stack, 0);
@@ -249,48 +265,79 @@ static void parse_expr(
 			if(*err) goto RET;
 			break;
 
-		case TOKEN_AMPERSAND:
+		case TOKEN_PERIOD:
 			do {} while(0);
+
+			const DebugInfo struct_access_debug = tokens[*index].debug.debug_info;
+
+			size_t *struct_parent = dynarr_pop(&free_terms);
+			if(!struct_parent) {
+				fprintf(stderr, "Expected Term before '.' at ");
+				lexer_print_debug_to_file(stderr, &struct_access_debug);
+				fprintf(stderr, "\n");
+				*err = ERROR_UNEXPECTED_DATA;
+				goto RET;
+			}
+
+			*index += 1;
+
+			if(tokens[*index].type != TOKEN_IDENT) {
+				fprintf(stderr, "Expected Identifier after '.', found ");
+				lexer_print_token_to_file(stderr, &tokens[*index], identifiers);
+				*err = ERROR_UNEXPECTED_DATA;
+				goto RET;
+			}
+
+			size_t member_id = tokens[*index].ident.id;
+
+			dynarr_push(
+				nodes,
+				&(AstNode) {
+					.struct_access = {
+						.type = AST_STRUCT_ACCESS,
+						.debug_info = struct_access_debug,
+						.parent = *struct_parent,
+						.member_id = member_id
+					},
+				},
+				err
+			);
+			if(*err) goto RET;
+
+			dynarr_push(&free_terms, &(size_t){nodes->count - 1}, err);
+			if(*err) goto RET;
+			break;
+
+		case TOKEN_AMPERSAND:
+			while(
+				top
+				&& (top->type == TOKEN_PERIOD
+					|| top->type == TOKEN_AMPERSAND
+				)
+			) {
+					operator_stack.count -= 1;
+
+					op_push(
+						*top,
+						nodes,
+						&free_terms,
+						&operator_stack,
+						err
+					);
+					if(*err) goto RET;
+					top = dynarr_from_back(&operator_stack, 0);
+			}
 
 			DebugInfo addr_debug = tokens[*index].debug.debug_info;
 
-			*index += 1;
-			if(tokens[*index].type != TOKEN_IDENT) {
+			if(tokens[*index + 1].type != TOKEN_IDENT) {
 				fprintf(stderr, "Expected Identifier after '&', found ");
 				lexer_print_token_to_file(stderr, &tokens[*index], identifiers);
 				*err = ERROR_UNEXPECTED_DATA;
 				goto RET;
 			}
 
-			dynarr_push(
-				nodes,
-				&(AstNode) {
-					.ident = {
-						.type = AST_IDENT,
-						.debug_info = tokens[*index].ident.debug_info,
-						.id = tokens[*index].ident.id,
-					},
-				},
-				err
-			);
-			if(*err) goto RET;
-
-			size_t base = nodes->count - 1;
-
-			dynarr_push(
-				nodes,
-				&(AstNode) {
-					.addr = {
-						.type = AST_ADDR,
-						.debug_info = addr_debug,
-						.base = base,
-					},
-				},
-				err
-			);
-			if(*err) goto RET;
-
-			dynarr_push(&free_terms, &(size_t) {nodes->count - 1}, err);
+			dynarr_push(&operator_stack, &tokens[*index], err);
 			if(*err) goto RET;
 			break;
 
@@ -390,7 +437,7 @@ static void parse_expr(
 			) {
 					operator_stack.count -= 1;
 
-					binop_push(*top, nodes, &free_terms, &operator_stack, err);
+					op_push(*top, nodes, &free_terms, &operator_stack, err);
 					if(*err) goto RET;
 					top = dynarr_from_back(&operator_stack, 0);
 			}
@@ -418,7 +465,7 @@ static void parse_expr(
 				&& (top->type == TOKEN_AMPERSAND || top->type == TOKEN_STAR || top->type == TOKEN_FSLASH)
 			) {
 					operator_stack.count -= 1;
-					binop_push(*top, nodes, &free_terms, &operator_stack, err);
+					op_push(*top, nodes, &free_terms, &operator_stack, err);
 					if(*err) goto RET;
 					top = dynarr_from_back(&operator_stack, 0);
 			}
@@ -450,7 +497,7 @@ static void parse_expr(
 				)
 			) {
 					operator_stack.count -= 1;
-					binop_push(*top, nodes, &free_terms, &operator_stack, err);
+					op_push(*top, nodes, &free_terms, &operator_stack, err);
 					if(*err) goto RET;
 					top = dynarr_from_back(&operator_stack, 0);
 			}
@@ -481,7 +528,7 @@ static void parse_expr(
 				)
 			) {
 					operator_stack.count -= 1;
-					binop_push(*top, nodes, &free_terms, &operator_stack, err);
+					op_push(*top, nodes, &free_terms, &operator_stack, err);
 					if(*err) goto RET;
 					top = dynarr_from_back(&operator_stack, 0);
 			}
@@ -490,6 +537,106 @@ static void parse_expr(
 			if(*err) goto RET;
 
 			break;
+
+		case TOKEN_UNDERSCORE:
+			do {} while(0);
+
+			DebugInfo underscore_debug = tokens[*index].debug.debug_info;
+			*index += 1;
+
+			if(tokens[*index].type != TOKEN_LCURLY) {
+				fprintf(stderr, "Expected '{' to start Compound Literal, found ");
+				lexer_print_token_to_file(stderr, &tokens[*index], identifiers);
+				fprintf(stderr, "\n");
+				*err = ERROR_UNEXPECTED_DATA;
+				goto RET;
+			}
+
+			DynArr names, vals;
+			dynarr_init(&names, sizeof(size_t));
+			dynarr_init(&vals, sizeof(size_t));
+
+			while(true) {
+				*index += 1;
+
+				if(tokens[*index].type != TOKEN_PERIOD) {
+					fprintf(stderr, "Expected '.' in Compound Literal, found ");
+					lexer_print_token_to_file(stderr, &tokens[*index], identifiers);
+					fprintf(stderr, "\n");
+					*err = ERROR_UNEXPECTED_DATA;
+					goto UNDERSCORE_CLEAN;
+				}
+
+				*index += 1;
+
+				if(tokens[*index].type != TOKEN_IDENT) {
+					fprintf(stderr, "Expected Identfier in Compound Literal, found ");
+					lexer_print_token_to_file(stderr, &tokens[*index], identifiers);
+					fprintf(stderr, "\n");
+					*err = ERROR_UNEXPECTED_DATA;
+					goto UNDERSCORE_CLEAN;
+				}
+
+				dynarr_push(&names, &tokens[*index].ident.id, err);
+				if(*err) goto UNDERSCORE_CLEAN;
+
+				*index += 1;
+
+				if(tokens[*index].type != TOKEN_ASSIGN) {
+					fprintf(stderr, "Expected '=' in Compound Literal, found ");
+					lexer_print_token_to_file(stderr, &tokens[*index], identifiers);
+					fprintf(stderr, "\n");
+					*err = ERROR_UNEXPECTED_DATA;
+					goto UNDERSCORE_CLEAN;
+				}
+
+				*index += 1;
+
+				parse_expr(tokens, token_count, index, nodes, identifiers, err);
+				if(*err) goto UNDERSCORE_CLEAN;
+
+				dynarr_push(&vals, &(size_t) { nodes->count - 1 }, err);
+				if(*err) goto UNDERSCORE_CLEAN;
+
+				*index += 1;
+
+				if(tokens[*index].type != TOKEN_COMMA) {
+					if(tokens[*index].type == TOKEN_RCURLY) {
+						break;
+					}
+
+					fprintf(stderr, "Expected ',' in Compound Literal, found ");
+					lexer_print_token_to_file(stderr, &tokens[*index], identifiers);
+					fprintf(stderr, "\n");
+					*err = ERROR_UNEXPECTED_DATA;
+					goto UNDERSCORE_CLEAN;
+				}
+			}
+
+			dynarr_push(
+				nodes,
+				&(AstNode) {
+					.struct_lit = {
+						.type = AST_STRUCT_LIT,
+						.debug_info = underscore_debug,
+						.member_count = names.count,
+						.member_name_ids = names.data,
+						.member_values = vals.data,
+					},
+				},
+				err
+			);
+			if(*err) goto RET;
+
+			dynarr_push(&free_terms, &(size_t) {nodes->count - 1}, err);
+			if(*err) goto UNDERSCORE_CLEAN;
+			break;
+
+
+UNDERSCORE_CLEAN:
+			dynarr_clean(&names);
+			dynarr_clean(&vals);
+			goto RET;
 
 		case TOKEN_INT_LIT:
 			dynarr_push(
@@ -562,7 +709,7 @@ static void parse_expr(
 		}
 		operator_stack.count -= 1;
 
-		binop_push(*top, nodes, &free_terms, &operator_stack, err);
+		op_push(*top, nodes, &free_terms, &operator_stack, err);
 
 		if(*err) goto RET;
 
@@ -570,7 +717,7 @@ static void parse_expr(
 	}
 
 	if(free_terms.count != 1) {
-		fprintf(stderr, "Malformed Expression at ");
+		fprintf(stderr, "Malformed Expression (too many operands) at ");
 		lexer_print_debug_to_file(stderr, &((AstNode*) dynarr_from_back(nodes, 0))->debug.debug_info);
 		fprintf(stderr, "\n");
 		*err = ERROR_UNEXPECTED_DATA;
@@ -981,7 +1128,87 @@ static void parse_type(
 		);
 		if(*err) goto RET;
 		break;
+
+	case TOKEN_STRUCT:
+		*index += 1;
 		
+		if(tokens[*index].type != TOKEN_LCURLY) {
+			fprintf(stderr, "Expected '{' after 'struct', found ");
+			lexer_print_token_to_file(stderr, &tokens[*index], identifiers);
+			*err = ERROR_UNEXPECTED_DATA;
+			goto RET;
+		}
+		
+		DynArr names, types;
+		dynarr_init(&names, sizeof(size_t));
+		dynarr_init(&types, sizeof(size_t));
+
+		while(true) {
+			*index += 1;
+
+			if(tokens[*index].type == TOKEN_RCURLY) break;
+
+			if(tokens[*index].type != TOKEN_IDENT) {
+				fprintf(stderr, "Expected Identifier for Struct Member Name, found ");
+				lexer_print_token_to_file(stderr, &tokens[*index], identifiers);
+				*err = ERROR_UNEXPECTED_DATA;
+				goto TOKEN_STRUCT_CLEAN;
+			}
+
+			dynarr_push(&names, &tokens[*index].ident.id, err);
+			if(*err) goto TOKEN_STRUCT_CLEAN;
+
+			*index += 1;
+
+			if(tokens[*index].type != TOKEN_COLON) {
+				fprintf(stderr, "Expected ':' in Struct Member Declaration, found ");
+				*err = ERROR_UNEXPECTED_DATA;
+		   		goto TOKEN_STRUCT_CLEAN;
+		 	}
+
+			*index += 1;
+
+			parse_type(tokens, token_count, index, nodes, identifiers, err);
+			if(*err) goto TOKEN_STRUCT_CLEAN;
+
+			dynarr_push(&types, &(size_t) {nodes->count - 1}, err);
+			if(*err) goto TOKEN_STRUCT_CLEAN;
+
+			*index += 1;
+
+			if(tokens[*index].type == TOKEN_RCURLY) break;
+
+			if(tokens[*index].type != TOKEN_COMMA) {
+				fprintf(stderr, "Expected ',' after Struct Member Declaration, found ");
+				*err = ERROR_UNEXPECTED_DATA;
+				goto TOKEN_STRUCT_CLEAN;
+			}
+		}
+
+TOKEN_STRUCT_CLEAN:
+		if(*err) {
+			dynarr_clean(&names);
+			dynarr_clean(&types);
+			goto RET;
+		}
+
+		dynarr_push(
+			nodes,
+			&(AstNode) {
+				.struct_type = {
+					.type = AST_STRUCT_TYPE,
+					.debug_info = location,
+					.member_count = names.count,
+					.member_name_ids = names.data,
+					.member_types = types.data,
+				},
+			},
+			err
+		);
+		if(*err) goto RET;
+
+		break;
+
 	case TOKEN_AMPERSAND:
 		do {} while(0);
 		AstNodeType access_modifier;
@@ -1023,7 +1250,7 @@ static void parse_type(
 		);
 		if(*err) goto RET;
 		break;
-	
+
 	case TOKEN_LSQUARE:
 		*index += 1;
 		switch(tokens[*index].type) {
@@ -1379,6 +1606,16 @@ void parser_clean_ast(AstNode *nodes, size_t node_count)
 			free(nodes[i].array_lit.elems);
 			break;
 
+		case AST_STRUCT_TYPE:
+			free(nodes[i].struct_type.member_name_ids);
+			free(nodes[i].struct_type.member_types);
+			break;
+
+		case AST_STRUCT_LIT:
+			free(nodes[i].struct_lit.member_name_ids);
+			free(nodes[i].struct_lit.member_values);
+			break;
+
 		case AST_NONE:
 		case AST_FN_DEF:
 		case AST_IDENT:
@@ -1404,6 +1641,7 @@ void parser_clean_ast(AstNode *nodes, size_t node_count)
 		case AST_SLICE_VAR:
 		case AST_SLICE_ABYSS:
 		case AST_SUBSCRIPT:
+		case AST_STRUCT_ACCESS:
 			break;
 		}
 	}
@@ -1576,6 +1814,41 @@ void parser_print_ast_to_file(
 				fprintf(file, "%zi, ", nodes[i].array_lit.elems[j]);
 			}
 			fprintf(file, "}");
+			break;
+
+		case AST_STRUCT_TYPE:
+			fprintf(file, "struct {");
+			for(size_t j = 0; j < nodes[i].struct_type.member_count; j++) {
+				fprintf(
+					file,
+					"%s: %zi, ",
+					identifiers[nodes[i].struct_type.member_name_ids[j]],
+					nodes[i].struct_type.member_types[j]
+				);
+			}
+			fprintf(file, "}");
+			break;
+
+		case AST_STRUCT_LIT:
+			fprintf(file, "(struct) {");
+			for(size_t j = 0; j < nodes[i].struct_lit.member_count; j++) {
+				fprintf(
+					file,
+					".%s = %zi",
+					identifiers[nodes[i].struct_lit.member_name_ids[j]],
+					nodes[i].struct_lit.member_values[j]
+				);
+			}
+			fprintf(file, "}");
+			break;
+
+		case AST_STRUCT_ACCESS:
+			fprintf(
+				file,
+				"%zi.%zi",
+				nodes[i].struct_access.parent,
+				nodes[i].struct_access.member_id
+			);
 			break;
 		}
 		fprintf(file, "\n");

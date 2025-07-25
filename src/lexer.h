@@ -44,6 +44,10 @@ typedef enum {
 	
 	TOKEN_LSQUARE,
 	TOKEN_RSQUARE,
+
+	TOKEN_PERIOD,
+
+	TOKEN_STRUCT
 } TokenType;
 
 typedef struct {

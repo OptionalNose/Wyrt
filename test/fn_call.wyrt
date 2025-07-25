@@ -5,7 +5,7 @@ fn main() u8
 
 fn foo(a: u8, b: u8, c: u8, d: u8, e: u8, f: u8, g: u8, h: u8, i: u8) u8
 {
-	const foo: u8 = (b + c) * d;
-	const bar: u8 = g / h / i;
-	return a + foo - e - f + bar;
+	const cat: u8 = (b + c) * d;
+	const dog: u8 = g / h / i;
+	return a + cat - e - f + dog;
 }

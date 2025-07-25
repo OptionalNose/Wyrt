@@ -5,6 +5,7 @@ It is currently less than skeletal, but the goal is to be eventually self-hosted
 
 See the Github Wiki for a pseudo-Tutorial.
 See the Specification for a technical and precise definition of the language.
+(Note: The Specification is currently outdated, and progress will continue once language features stabalize).
 
 It is planned to strongly support Design by Contract, with probably syntax similar to:
 ```
@@ -25,7 +26,7 @@ The idea is that the better the programmer can understand what a function does a
 
 It is called "wyrt" based off of the old-english word for "root", because it encourages you to get 'down in the dirt' and do-it-yourself.
 It is _supposed_ to be pronounced "woo-rt", if you go by the original old-english.
-I find it easier to pronounce it "whir-t" or "wee-rt". 
+I find it easier to pronounce it "whir-t" or "wee-rt".
 
 ---
 
@@ -45,9 +46,10 @@ These Sanitizers at times do not like the high-levels of recursion throughout th
 If you get a Segfault message without any information from the Sanitizers, then it is highly likely they are the culprit.
 Running the program repeatedly, or inside a debugger, will fix the problem.
 
-The only dependency is `libc`, so the compiler should be able to run on any platform, although currently only Linux and Windows x86_64 codegen is supported.
-I don't have a Mac, so I can't really support it as a platform.
-See below for a possible work around.
+The only _build_ dependency is `libc`, so the compiler should be able to build
+on any platform.
+
+The Compiler needs `clang` as a _runtime_ dependency to actually produce binaries.
 
 ---
 
@@ -60,33 +62,24 @@ to display the builtin help, run `wyrt --help` or `wyrt -h`
 
 Currently multiple input files and glob-patterns are not supported.
 
-The compiler only produces assembly files, so it assumes that you have `nasm` and `ld` installed to create executable binaries.
-If you do not have these installed, you can make it just output the assembly by `wyrt -S`
-(it will output nasm-syntax asm, so you will probably need to make some manual and scripted edits on the outputted file to get it to compile with GNU's assembler or others).
+The compiler uses LLVM via `clang` to produce and link the resulting binary.
+
+*You must have* `clang` *installed* in order to actually compiler anything.
 
 To only compile, but not link, use `wyrt -c`. The created object files can be linked normally.
-
-You *might* be able to get it to work on other platforms by compiling to an object file and then linking with `libc`, assuming you define the `main` function somewhere.
-For any non-Windows platform, you can run `wyrt --target=linux -c` to generate a SystemV-ABI object file for *any* target.
-So as long as the `libc` you are using follows the System V ABI Calling Convention, you *should* be able to get a functioning executable.
 
 ---
 
 ## Testing
-Build the Test Runner with
+Build the Release build of the Compiler
+(prevents Sanitizer Segfault issue), and Build and Run the Test Runner
 ```bash
-CC test_runner.c -o test_runner
-```
-Make sure you have built a release version of the Compiler (makes testing faster and removes the Sanitizer Segfault issue) with
-```bash
-make release
-```
-And then to run the tests:
-```bash
-./test_runner
+make test
 ```
 
 Some tests are designed to not compile, these have 'failing_' prefixing their names.
+
+Expected Test output can be found in `test_manifest`.
 
 ---
 
@@ -94,4 +87,4 @@ Some tests are designed to not compile, these have 'failing_' prefixing their na
 The Makefile compiles a debug version of the compiler with Address and Undefined Santizers enabled.
 These Sanitizers sometimes get upset about the large stack-depths in the parser and segfault :upside_down_face:.
 Just run the compiler repeatedly and it should work eventually.
-Alternatively, you could also just run it inside a debugger, and that seems to keep the Sanitzers from crashing. 
+Alternatively, you could also just run it inside a debugger, and that seems to keep the Sanitzers from crashing.

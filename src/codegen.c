@@ -1647,16 +1647,7 @@ static void gen_expr(
 			);
 			if(*err) goto RET;
 
-			gen_expr(
-				cg,
-				&cg->nodes[addr_obj.subscript.arr],
-				(Type) {.type =	TYPE_NONE},
-				temp_counter,
-				scope,
-				err
-			);
-			if(*err) goto RET;
-			size_t arr_ssa = *temp_counter - 1;
+			Type elem_type = scope->tc.types[arr_type.slice.base];
 
 			gen_expr(
 				cg,
@@ -1669,32 +1660,44 @@ static void gen_expr(
 			if(*err) goto RET;
 			size_t index_ssa = *temp_counter - 1;
 
-			FPRINTF_OR_ERR(
-				cg->output,
-				"%%%zi = getelementptr ",
-				*temp_counter
-			);
-			*temp_counter += 1;
-			print_type(cg->output, &scope->tc, arr_type, err);
-			if(*err) goto RET;
-
 			switch(arr_type.type) {
 			case TYPE_ARRAY:
-				FPRINTF_OR_ERR(
-					cg->output,
-					", ptr %%%zi, i64 %%%zi\n",
-					arr_ssa, index_ssa
+				gen_expr(
+					cg,
+					&(AstNode) {
+						.addr = {
+							.type = AST_ADDR,
+							.debug_info = expr->debug.debug_info,
+							.base = addr_obj.subscript.arr,
+						},
+					},
+					(Type) {.type = TYPE_NONE},
+					temp_counter,
+					scope,
+					err
 				);
+				if(*err) goto RET;
 				break;
 
 			case TYPE_SLICE_CONST:
 			case TYPE_SLICE_VAR:
 			case TYPE_SLICE_ABYSS:
+				gen_expr(
+					cg,
+					&cg->nodes[addr_obj.subscript.arr],
+					arr_type,
+					temp_counter,
+					scope,
+					err
+				);
+				if(*err) goto RET;
+
 				FPRINTF_OR_ERR(
 					cg->output,
-					", ptr %%%zi, i32 0, i64 %%%zi\n",
-					arr_ssa, index_ssa
+					"%%%zi = extractvalue {ptr, i64} %%%zi, 0\n",
+					*temp_counter, *temp_counter - 1
 				);
+				*temp_counter += 1;
 				break;
 
 			default:
@@ -1706,6 +1709,21 @@ static void gen_expr(
 				*err = ERROR_UNEXPECTED_DATA;
 				goto RET;
 			}
+
+			FPRINTF_OR_ERR(
+				cg->output,
+				"%%%zi = getelementptr ",
+				*temp_counter
+			);
+			*temp_counter += 1;
+			print_type(cg->output, &scope->tc, elem_type, err);
+			if(*err) goto RET;
+			FPRINTF_OR_ERR(
+				cg->output,
+				", ptr %%%zi, i64 %%%zi\n",
+				*temp_counter - 2,
+				index_ssa
+			);
 
 			TypeType subs_ptr_access;
 			switch(arr_type.type) {

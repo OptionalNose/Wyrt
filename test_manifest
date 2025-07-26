@@ -36,7 +36,7 @@
 {
 	.file = "array_and_slice.wyrt",
 	.exitcode = 46,
-}, 
+},
 
 {
 	.file = "failing_array_len_mismatch.wyrt",
@@ -51,4 +51,9 @@
 {
 	.file = "struct.wyrt",
 	.exitcode = 7,
+},
+
+{
+	.file = "addressing.wyrt",
+	.exitcode = 8,
 },

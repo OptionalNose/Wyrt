@@ -26,6 +26,7 @@
 
 typedef struct {
 	size_t id;
+	size_t linkage_name;
 	Type ret;
 	size_t arg_count;
 	Type *args;
@@ -55,6 +56,8 @@ typedef struct {
 	const AstNode *nodes;
 	size_t node_count;
 	char *const *identifiers;
+	char *const *strings;
+	size_t string_count;
 	size_t fn_sig_count;
 	FnSig *fn_sigs;
 
@@ -67,7 +70,9 @@ void codegen_init(
 	const char *target_triple,
 	const AstNode *nodes,
 	size_t node_count,
-	char *const *identifiers
+	char *const *identifiers,
+	char *const *strings,
+	size_t string_count
 );
 
 void codegen_clean(const CodeGen *cg);

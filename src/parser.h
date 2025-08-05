@@ -45,6 +45,13 @@ typedef enum {
 	AST_STRUCT_TYPE,
 	AST_STRUCT_LIT,
 	AST_STRUCT_ACCESS,
+
+	AST_STRING_LIT,
+	AST_ZSTRING_LIT,
+	AST_CSTRING_LIT,
+
+	AST_EXTERN,
+	AST_DISCARD,
 } AstNodeType;
 
 typedef union {
@@ -201,12 +208,31 @@ typedef union {
 		size_t parent;
 		size_t member_id;
 	} struct_access;
+
+	struct {
+		AstNodeType type;
+		DebugInfo debug_info;
+		size_t id;
+	} string_lit;
+
+	struct {
+		AstNodeType type;
+		DebugInfo debug_info;
+		size_t name;
+	} extrn;
+
+	struct {
+		AstNodeType type;
+		DebugInfo debug_info;
+		size_t value;
+	} discard;
 } AstNode;
 
 void parser_gen_ast(
 	Token const *tokens, size_t token_count,
 	AstNode **nodes, size_t *node_count,
 	char *const *identifiers,
+	char *const *strings,
 	Error *err
 );
 
@@ -214,5 +240,8 @@ void parser_clean_ast(AstNode *nodes, size_t node_count);
 
 void parser_print_ast_to_file(
 	FILE *file,
-	AstNode *nodes, size_t node_count, char *const *identifiers
+	AstNode *nodes,
+	size_t node_count,
+	char *const *identifiers,
+	char *const *strings
 );

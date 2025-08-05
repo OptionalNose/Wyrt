@@ -4,6 +4,7 @@ static void parse_expr(
 	const Token *tokens, size_t token_count, size_t *index,
 	DynArr *nodes,
 	char *const *identifiers,
+	char *const *strings,
 	Error *err
 );
 
@@ -11,6 +12,7 @@ static void parse_fn_call(
 	const Token *tokens, size_t token_count, size_t *index,
 	DynArr *nodes,
 	char *const *identifiers,
+	char *const *strings,
 	Error *err
 )
 {
@@ -25,7 +27,7 @@ static void parse_fn_call(
 	*index += 2;
 
 	while(true) {
-		parse_expr(tokens, token_count, index, nodes, identifiers, err);
+		parse_expr(tokens, token_count, index, nodes, identifiers, strings, err);
 		if(*err) goto RET;
 
 		*index += 1;
@@ -37,7 +39,7 @@ static void parse_fn_call(
 
 		if(tokens[*index].type != TOKEN_COMMA) {
 			fprintf(stderr, "Expected ',', found ");
-			lexer_print_token_to_file(stderr, &tokens[*index], identifiers);
+			lexer_print_token_to_file(stderr, &tokens[*index], identifiers, strings);
 			goto RET;
 		}
 
@@ -134,6 +136,7 @@ static void parse_expr(
 	const Token *tokens, size_t token_count, size_t *index,
 	DynArr *nodes,
 	char *const *identifiers,
+	char *const *strings,
 	Error *err
 )
 {
@@ -161,7 +164,7 @@ static void parse_expr(
 
 			while(tokens[*index].type != TOKEN_RCURLY) {
 				*index += 1;
-				parse_expr(tokens, token_count, index, nodes, identifiers, err);
+				parse_expr(tokens, token_count, index, nodes, identifiers, strings, err);
 				if(*err) goto RET;
 				dynarr_push(&elems, &(size_t) { nodes->count - 1}, err);
 				if(*err) goto RET;
@@ -170,7 +173,7 @@ static void parse_expr(
 
 				if(tokens[*index].type != TOKEN_COMMA && tokens[*index].type != TOKEN_RCURLY) {
 					fprintf(stderr, "Error: Expected ',' found ");
-					lexer_print_token_to_file(stderr, &tokens[*index], identifiers);
+					lexer_print_token_to_file(stderr, &tokens[*index], identifiers, strings);
 					*err = ERROR_UNEXPECTED_DATA;
 					goto RET;
 				}
@@ -233,14 +236,14 @@ static void parse_expr(
 			size_t arr = *(size_t*)dynarr_pop(&free_terms);
 			
 			*index += 1;
-			parse_expr(tokens, token_count, index, nodes, identifiers, err);
+			parse_expr(tokens, token_count, index, nodes, identifiers, strings, err);
 			if(*err) goto RET;
 
 			*index += 1;
 
 			if(tokens[*index].type != TOKEN_RSQUARE) {
 				fprintf(stderr, "Error: Expected ']' after '[', found ");
-				lexer_print_token_to_file(stderr, &tokens[*index], identifiers);
+				lexer_print_token_to_file(stderr, &tokens[*index], identifiers, strings);
 				*err = ERROR_UNEXPECTED_DATA;
 				goto RET;
 			}
@@ -283,7 +286,7 @@ static void parse_expr(
 
 			if(tokens[*index].type != TOKEN_IDENT) {
 				fprintf(stderr, "Expected Identifier after '.', found ");
-				lexer_print_token_to_file(stderr, &tokens[*index], identifiers);
+				lexer_print_token_to_file(stderr, &tokens[*index], identifiers, strings);
 				*err = ERROR_UNEXPECTED_DATA;
 				goto RET;
 			}
@@ -332,7 +335,7 @@ static void parse_expr(
 
 			if(tokens[*index + 1].type != TOKEN_IDENT) {
 				fprintf(stderr, "Expected Identifier after '&', found ");
-				lexer_print_token_to_file(stderr, &tokens[*index], identifiers);
+				lexer_print_token_to_file(stderr, &tokens[*index], identifiers, strings);
 				*err = ERROR_UNEXPECTED_DATA;
 				goto RET;
 			}
@@ -390,14 +393,14 @@ static void parse_expr(
 				case TOKEN_LPAREN:
 					*index += 1;
 
-					parse_expr(tokens, token_count, index, nodes, identifiers, err);
+					parse_expr(tokens, token_count, index, nodes, identifiers, strings, err);
 					if(*err) goto RET;
 
 					*index += 1;
 
 					if(tokens[*index].type != TOKEN_RPAREN) {
 						fprintf(stderr, "Expected Closed Parentheses for Target of Dereference, found ");
-						lexer_print_token_to_file(stderr, &tokens[*index], identifiers);
+						lexer_print_token_to_file(stderr, &tokens[*index], identifiers, strings);
 						*err = ERROR_UNEXPECTED_DATA;
 						goto RET;
 					}
@@ -423,7 +426,7 @@ static void parse_expr(
 
 				default:
 					fprintf(stderr, "Invalid Target for Dereference: ");
-					lexer_print_token_to_file(stderr, &tokens[*index], identifiers);
+					lexer_print_token_to_file(stderr, &tokens[*index], identifiers, strings);
 					*err = ERROR_UNEXPECTED_DATA;
 					goto RET;
 				}
@@ -455,7 +458,7 @@ static void parse_expr(
 				|| last_seen == TOKEN_MINUS
 			) {
 				fprintf(stderr, "Malformed Expression. Unexpected ");
-				lexer_print_token_to_file(stderr, &tokens[*index], identifiers);
+				lexer_print_token_to_file(stderr, &tokens[*index], identifiers, strings);
 				*err = ERROR_UNEXPECTED_DATA;
 				goto RET;
 			}
@@ -483,7 +486,7 @@ static void parse_expr(
 				|| last_seen == TOKEN_MINUS
 			) {
 				fprintf(stderr, "Malformed Expression. Unexpected ");
-				lexer_print_token_to_file(stderr, &tokens[*index], identifiers);
+				lexer_print_token_to_file(stderr, &tokens[*index], identifiers, strings);
 				*err = ERROR_UNEXPECTED_DATA;
 				goto RET;
 			}
@@ -515,7 +518,7 @@ static void parse_expr(
 				|| last_seen == TOKEN_MINUS
 			) {
 				fprintf(stderr, "Malformed Expression. Unexpected ");
-				lexer_print_token_to_file(stderr, &tokens[*index], identifiers);
+				lexer_print_token_to_file(stderr, &tokens[*index], identifiers, strings);
 				*err = ERROR_UNEXPECTED_DATA;
 				goto RET;
 			}
@@ -546,7 +549,7 @@ static void parse_expr(
 
 			if(tokens[*index].type != TOKEN_LCURLY) {
 				fprintf(stderr, "Expected '{' to start Compound Literal, found ");
-				lexer_print_token_to_file(stderr, &tokens[*index], identifiers);
+				lexer_print_token_to_file(stderr, &tokens[*index], identifiers, strings);
 				fprintf(stderr, "\n");
 				*err = ERROR_UNEXPECTED_DATA;
 				goto RET;
@@ -561,7 +564,7 @@ static void parse_expr(
 
 				if(tokens[*index].type != TOKEN_PERIOD) {
 					fprintf(stderr, "Expected '.' in Compound Literal, found ");
-					lexer_print_token_to_file(stderr, &tokens[*index], identifiers);
+					lexer_print_token_to_file(stderr, &tokens[*index], identifiers, strings);
 					fprintf(stderr, "\n");
 					*err = ERROR_UNEXPECTED_DATA;
 					goto UNDERSCORE_CLEAN;
@@ -571,7 +574,7 @@ static void parse_expr(
 
 				if(tokens[*index].type != TOKEN_IDENT) {
 					fprintf(stderr, "Expected Identfier in Compound Literal, found ");
-					lexer_print_token_to_file(stderr, &tokens[*index], identifiers);
+					lexer_print_token_to_file(stderr, &tokens[*index], identifiers, strings);
 					fprintf(stderr, "\n");
 					*err = ERROR_UNEXPECTED_DATA;
 					goto UNDERSCORE_CLEAN;
@@ -584,7 +587,7 @@ static void parse_expr(
 
 				if(tokens[*index].type != TOKEN_ASSIGN) {
 					fprintf(stderr, "Expected '=' in Compound Literal, found ");
-					lexer_print_token_to_file(stderr, &tokens[*index], identifiers);
+					lexer_print_token_to_file(stderr, &tokens[*index], identifiers, strings);
 					fprintf(stderr, "\n");
 					*err = ERROR_UNEXPECTED_DATA;
 					goto UNDERSCORE_CLEAN;
@@ -592,7 +595,7 @@ static void parse_expr(
 
 				*index += 1;
 
-				parse_expr(tokens, token_count, index, nodes, identifiers, err);
+				parse_expr(tokens, token_count, index, nodes, identifiers, strings, err);
 				if(*err) goto UNDERSCORE_CLEAN;
 
 				dynarr_push(&vals, &(size_t) { nodes->count - 1 }, err);
@@ -606,7 +609,7 @@ static void parse_expr(
 					}
 
 					fprintf(stderr, "Expected ',' in Compound Literal, found ");
-					lexer_print_token_to_file(stderr, &tokens[*index], identifiers);
+					lexer_print_token_to_file(stderr, &tokens[*index], identifiers, strings);
 					fprintf(stderr, "\n");
 					*err = ERROR_UNEXPECTED_DATA;
 					goto UNDERSCORE_CLEAN;
@@ -638,6 +641,35 @@ UNDERSCORE_CLEAN:
 			dynarr_clean(&vals);
 			goto RET;
 
+		case TOKEN_STRING_LIT:
+		case TOKEN_ZSTRING_LIT:
+		case TOKEN_CSTRING_LIT:
+			do {} while(0);
+
+			const AstNodeType strlit_types[] = {
+				AST_STRING_LIT,
+				AST_ZSTRING_LIT,
+				AST_CSTRING_LIT,
+			};
+			
+			const AstNodeType strlit_type = strlit_types[tokens[*index].type - TOKEN_STRING_LIT];
+
+			dynarr_push(
+				nodes,
+				&(AstNode) {
+					.string_lit = {
+						.type = strlit_type,
+						.debug_info = tokens[*index].debug.debug_info,
+						.id = tokens[*index].string_lit.id,				
+					},
+				},
+				err
+			);
+			if(*err) goto RET;
+			dynarr_push(&free_terms, &(size_t) {nodes->count - 1}, err);
+			if(*err) goto RET;
+			break;
+
 		case TOKEN_INT_LIT:
 			dynarr_push(
 				nodes,
@@ -657,7 +689,7 @@ UNDERSCORE_CLEAN:
 
 		case TOKEN_IDENT:
 			if(tokens[*index + 1].type == TOKEN_LPAREN) {
-				parse_fn_call(tokens, token_count, index, nodes, identifiers, err);
+				parse_fn_call(tokens, token_count, index, nodes, identifiers, strings, err);
 				if(*err) goto RET;
 			} else {
 				dynarr_push(
@@ -687,7 +719,7 @@ UNDERSCORE_CLEAN:
 
 		default:
 			fprintf(stderr, "Unexpected ");
-			lexer_print_token_to_file(stderr, &tokens[*index], identifiers);
+			lexer_print_token_to_file(stderr, &tokens[*index], identifiers, strings);
 			fprintf(stderr, "\n");
 			*err = ERROR_UNEXPECTED_DATA;
 			goto RET;
@@ -734,6 +766,7 @@ static void parse_type(
 	const Token *tokens, size_t token_count, size_t *index,
 	DynArr *nodes,
 	char *const *identifiers,
+	char *const *strings,
 	Error *err
 );
 
@@ -741,6 +774,7 @@ static void parse_block(
 	const Token *tokens, size_t token_count, size_t *index,
 	DynArr *nodes,
 	char *const *identifiers,
+	char *const *strings,
 	Error *err
 )
 {
@@ -749,7 +783,7 @@ static void parse_block(
 
 	if(tokens[*index].type != TOKEN_LCURLY) {
 		fprintf(stderr, "Expected '{', found ");
-		lexer_print_token_to_file(stderr, &tokens[*index], identifiers);
+		lexer_print_token_to_file(stderr, &tokens[*index], identifiers, strings);
 		fprintf(stderr, " instead\n");
 		*err = ERROR_UNEXPECTED_DATA;
 		goto RET;
@@ -769,7 +803,7 @@ static void parse_block(
 			size_t return_val = 0;
 			if(tokens[*index + 1].type != TOKEN_SEMICOLON) {
 				*index += 1;
-				parse_expr(tokens, token_count, index, nodes, identifiers, err);
+				parse_expr(tokens, token_count, index, nodes, identifiers, strings, err);
 				if(*err) goto RET;
 
 				return_val = nodes->count - 1;
@@ -797,7 +831,7 @@ static void parse_block(
 
 			if(tokens[*index].type != TOKEN_IDENT) {
 				fprintf(stderr, "Expected Identifier, found ");
-				lexer_print_token_to_file(stderr, &tokens[*index], identifiers);
+				lexer_print_token_to_file(stderr, &tokens[*index], identifiers, strings);
 				fprintf(stderr, "\n");
 				*err = ERROR_UNEXPECTED_DATA;
 				goto RET;
@@ -809,7 +843,7 @@ static void parse_block(
 
 			if(tokens[*index].type != TOKEN_COLON) {
 				fprintf(stderr, "Expected ':', found ");
-				lexer_print_token_to_file(stderr, &tokens[*index], identifiers);
+				lexer_print_token_to_file(stderr, &tokens[*index], identifiers, strings);
 				fprintf(stderr, "\n");
 				*err = ERROR_UNEXPECTED_DATA;
 				goto RET;
@@ -817,7 +851,7 @@ static void parse_block(
 
 			*index += 1;
 
-			parse_type(tokens, token_count, index, nodes, identifiers, err);
+			parse_type(tokens, token_count, index, nodes, identifiers, strings, err);
 			if(*err) goto RET;
 
 			size_t data_type = nodes->count - 1; 
@@ -825,7 +859,7 @@ static void parse_block(
 			size_t initial = 0;
 			if(tokens[*index + 1].type == TOKEN_ASSIGN) {
 				*index += 2;
-				parse_expr(tokens, token_count, index, nodes, identifiers, err);
+				parse_expr(tokens, token_count, index, nodes, identifiers, strings, err);
 				if(*err) goto RET;
 
 				initial = nodes->count - 1;
@@ -886,14 +920,14 @@ static void parse_block(
 			case TOKEN_LPAREN:
 				*index += 1;
 
-				parse_expr(tokens, token_count, index, nodes, identifiers, err);
+				parse_expr(tokens, token_count, index, nodes, identifiers, strings, err);
 				if(*err) goto RET;
 
 				*index += 1;
 
 				if(tokens[*index].type != TOKEN_RPAREN) {
 					fprintf(stderr, "Expected ')', found ");
-					lexer_print_token_to_file(stderr, &tokens[*index], identifiers);
+					lexer_print_token_to_file(stderr, &tokens[*index], identifiers, strings);
 					*err = ERROR_UNEXPECTED_DATA;
 					goto RET;
 				}
@@ -916,7 +950,7 @@ static void parse_block(
 
 			default:
 				fprintf(stderr, "Invalid Target for Dereference: ");
-				lexer_print_token_to_file(stderr, &tokens[*index], identifiers);
+				lexer_print_token_to_file(stderr, &tokens[*index], identifiers, strings);
 				*err = ERROR_UNEXPECTED_DATA;
 				goto RET;
 			}
@@ -943,7 +977,7 @@ static void parse_block(
 				break;
 			default:
 				fprintf(stderr, "Expected Assignment, found ");
-				lexer_print_token_to_file(stderr, &tokens[*index], identifiers);
+				lexer_print_token_to_file(stderr, &tokens[*index], identifiers, strings);
 				*err = ERROR_UNEXPECTED_DATA;
 				goto RET;
 			}
@@ -951,7 +985,7 @@ static void parse_block(
 			DebugInfo assign_debug = tokens[*index].debug.debug_info;
 
 			*index += 1;
-			parse_expr(tokens, token_count, index, nodes, identifiers, err);
+			parse_expr(tokens, token_count, index, nodes, identifiers, strings, err);
 			if(*err) goto RET;
 
 			size_t expr = nodes->count - 1;
@@ -974,7 +1008,7 @@ static void parse_block(
 		case TOKEN_IDENT:
 			switch(tokens[*index + 1].type) {
 			case TOKEN_LPAREN:
-				parse_fn_call(tokens, token_count, index, nodes, identifiers, err);
+				parse_fn_call(tokens, token_count, index, nodes, identifiers, strings, err);
 				if(*err) goto RET;
 				break;
 
@@ -1022,7 +1056,7 @@ static void parse_block(
 
 				size_t var = nodes->count - 1;
 
-				parse_expr(tokens, token_count, index, nodes, identifiers, err);
+				parse_expr(tokens, token_count, index, nodes, identifiers, strings, err);
 				if(*err) goto RET;
 
 				size_t expr = nodes->count - 1;
@@ -1047,23 +1081,45 @@ static void parse_block(
 			case TOKEN_MINUS:
 			case TOKEN_FSLASH:
 				fprintf(stderr, "Expected Statement, found Expression ");
-				lexer_print_token_to_file(stderr, &tokens[*index + 1], identifiers);
+				lexer_print_token_to_file(stderr, &tokens[*index + 1], identifiers, strings);
 				fprintf(stderr, "\n");
 				*err = ERROR_UNEXPECTED_DATA;
 				goto RET;
 
 			default:
 				fprintf(stderr, "Unexpected ");
-				lexer_print_token_to_file(stderr, &tokens[*index + 1], identifiers);
+				lexer_print_token_to_file(stderr, &tokens[*index + 1], identifiers, strings);
 				fprintf(stderr, "\n");
 				*err = ERROR_UNEXPECTED_DATA;
 				goto RET;
 			}
 			break;
 
+		case TOKEN_DISCARD:
+			*index += 1;
+
+			parse_expr(tokens, token_count, index, nodes, identifiers, strings, err);
+			if(*err) goto RET;
+
+			size_t discarded_value = nodes->count - 1;
+
+			dynarr_push(
+				nodes,
+				&(AstNode) {
+					.discard = {
+						.type = AST_DISCARD,
+						.debug_info = debug,
+						.value = discarded_value,
+					},
+				}, err
+			);
+			if(*err) goto RET;
+
+			break;
+
 		default:
 			fprintf(stderr, "Unexpected ");
-			lexer_print_token_to_file(stderr, &tokens[*index], identifiers);
+			lexer_print_token_to_file(stderr, &tokens[*index], identifiers, strings);
 			fprintf(stderr, "\n");
 			*err = ERROR_UNEXPECTED_DATA;
 			goto RET;
@@ -1071,7 +1127,7 @@ static void parse_block(
 
 		if(tokens[++*index].type != TOKEN_SEMICOLON) {
 			fprintf(stderr, "Expected ';', found ");
-			lexer_print_token_to_file(stderr, &tokens[*index], identifiers);
+			lexer_print_token_to_file(stderr, &tokens[*index], identifiers, strings);
 			fprintf(stderr, "\n");
 			*err = ERROR_UNEXPECTED_DATA;
 			goto RET;
@@ -1106,6 +1162,7 @@ static void parse_type(
 	const Token *tokens, size_t token_count, size_t *index,
 	DynArr *nodes,
 	char *const *identifiers,
+	char *const *strings,
 	Error *err
 )
 {
@@ -1134,7 +1191,7 @@ static void parse_type(
 		
 		if(tokens[*index].type != TOKEN_LCURLY) {
 			fprintf(stderr, "Expected '{' after 'struct', found ");
-			lexer_print_token_to_file(stderr, &tokens[*index], identifiers);
+			lexer_print_token_to_file(stderr, &tokens[*index], identifiers, strings);
 			*err = ERROR_UNEXPECTED_DATA;
 			goto RET;
 		}
@@ -1150,7 +1207,7 @@ static void parse_type(
 
 			if(tokens[*index].type != TOKEN_IDENT) {
 				fprintf(stderr, "Expected Identifier for Struct Member Name, found ");
-				lexer_print_token_to_file(stderr, &tokens[*index], identifiers);
+				lexer_print_token_to_file(stderr, &tokens[*index], identifiers, strings);
 				*err = ERROR_UNEXPECTED_DATA;
 				goto TOKEN_STRUCT_CLEAN;
 			}
@@ -1168,7 +1225,7 @@ static void parse_type(
 
 			*index += 1;
 
-			parse_type(tokens, token_count, index, nodes, identifiers, err);
+			parse_type(tokens, token_count, index, nodes, identifiers, strings, err);
 			if(*err) goto TOKEN_STRUCT_CLEAN;
 
 			dynarr_push(&types, &(size_t) {nodes->count - 1}, err);
@@ -1225,14 +1282,14 @@ TOKEN_STRUCT_CLEAN:
 			break;
 		default:
 			fprintf(stderr, "Expected Access Modifier for Pointer Type found ");
-			lexer_print_token_to_file(stderr, &tokens[*index], identifiers);
+			lexer_print_token_to_file(stderr, &tokens[*index], identifiers, strings);
 			*err = ERROR_UNEXPECTED_DATA;
 			goto RET;
 		}
 
 		*index += 1;
 
-		parse_type(tokens, token_count, index, nodes, identifiers, err);
+		parse_type(tokens, token_count, index, nodes, identifiers, strings, err);
 		if(*err) goto RET;
 
 		size_t base_type = nodes->count - 1;
@@ -1270,14 +1327,14 @@ TOKEN_STRUCT_CLEAN:
 				break;
 			default:
 				fprintf(stderr, "Error: Expected Access Modifier for Slice Type, found ");
-				lexer_print_token_to_file(stderr, &tokens[*index], identifiers);
+				lexer_print_token_to_file(stderr, &tokens[*index], identifiers, strings);
 				*err = ERROR_UNEXPECTED_DATA;
 				goto RET;
 			}
 
 			*index += 1;
 
-			parse_type(tokens, token_count, index, nodes, identifiers, err);
+			parse_type(tokens, token_count, index, nodes, identifiers, strings, err);
 			if(*err) goto RET;
 
 			size_t slice_base = nodes->count - 1;
@@ -1310,14 +1367,14 @@ TOKEN_STRUCT_CLEAN:
 
 			if(tokens[*index].type != TOKEN_RSQUARE) {
 				fprintf(stderr, "Error: Expected ']', found ");
-				lexer_print_token_to_file(stderr, &tokens[*index], identifiers);
+				lexer_print_token_to_file(stderr, &tokens[*index], identifiers, strings);
 				*err = ERROR_UNEXPECTED_DATA;
 				goto RET;
 			}
 
 			*index += 1;
 
-			parse_type(tokens, token_count, index, nodes, identifiers, err);
+			parse_type(tokens, token_count, index, nodes, identifiers, strings, err);
 			if(*err) goto RET;
 
 			size_t arr_type = nodes->count - 1;
@@ -1342,14 +1399,14 @@ TOKEN_STRUCT_CLEAN:
 
 			if(tokens[*index].type != TOKEN_RSQUARE) {
 				fprintf(stderr, "Error: Expected ']', found ");
-				lexer_print_token_to_file(stderr, &tokens[*index], identifiers);
+				lexer_print_token_to_file(stderr, &tokens[*index], identifiers, strings);
 				*err = ERROR_UNEXPECTED_DATA;
 				goto RET;
 			}
 
 			*index += 1;
 
-			parse_type(tokens, token_count, index, nodes, identifiers, err);
+			parse_type(tokens, token_count, index, nodes, identifiers, strings, err);
 			if(*err) goto RET;
 
 			arr_type = nodes->count - 1;
@@ -1371,7 +1428,7 @@ TOKEN_STRUCT_CLEAN:
 
 		default:
 			fprintf(stderr, "Error: Expected Array or Slice Type, found ");
-			lexer_print_token_to_file(stderr, &tokens[*index], identifiers);
+			lexer_print_token_to_file(stderr, &tokens[*index], identifiers, strings);
 			*err = ERROR_UNEXPECTED_DATA;
 			goto RET;
 		}
@@ -1385,7 +1442,8 @@ TOKEN_STRUCT_CLEAN:
 				lexer_print_token_to_file(
 					stderr,
 					&tokens[*index],
-					identifiers
+					identifiers,
+					strings
 				);
 				*err = ERROR_UNEXPECTED_DATA;
 				goto RET;
@@ -1409,7 +1467,7 @@ TOKEN_STRUCT_CLEAN:
 
 			if(tokens[*index].type != TOKEN_COLON) {
 				fprintf(stderr, "Expected ':', found ");
-				lexer_print_token_to_file(stderr, &tokens[*index], identifiers);
+				lexer_print_token_to_file(stderr, &tokens[*index], identifiers, strings);
 				*err = ERROR_UNEXPECTED_DATA;
 				goto RET;
 			}
@@ -1417,7 +1475,7 @@ TOKEN_STRUCT_CLEAN:
 			*index += 1;
 
 			parse_type(
-				tokens, token_count, index, nodes, identifiers, err
+				tokens, token_count, index, nodes, identifiers, strings, err
 			);
 			if(*err) goto RET;
 
@@ -1437,7 +1495,7 @@ TOKEN_STRUCT_CLEAN:
 		*index += 1;
 		
 		parse_type(
-			tokens, token_count, index, nodes, identifiers, err
+			tokens, token_count, index, nodes, identifiers, strings, err
 		);
 		if(*err) goto RET;
 		size_t ret_type = nodes->count - 1;
@@ -1463,7 +1521,8 @@ TOKEN_STRUCT_CLEAN:
 		lexer_print_token_to_file(
 			stderr,
 			&tokens[*index],
-			identifiers
+			identifiers,
+			strings
 		);
 		*err = ERROR_UNEXPECTED_DATA;
 		goto RET;
@@ -1477,6 +1536,7 @@ void parser_gen_ast(
 	Token const *tokens, size_t token_count,
 	AstNode **nodes, size_t *node_count,
 	char *const *identifiers,
+	char *const *strings,
 	Error *err
 )
 {
@@ -1498,7 +1558,10 @@ void parser_gen_ast(
 			if(tokens[++index].type != TOKEN_IDENT) {
 				fprintf(stderr, "Error: Expected Identifier, found ");
 				lexer_print_token_to_file(
-					stderr, &tokens[index], identifiers
+					stderr,
+					&tokens[index],
+					identifiers,
+					strings
 				);
 				fprintf(stderr, " instead.\n");
 				*err = ERROR_UNEXPECTED_DATA;
@@ -1520,16 +1583,77 @@ void parser_gen_ast(
 
 			index += 1;
 			parse_type(
-				tokens, token_count, &index, &node_list, identifiers, err      
+				tokens, token_count, &index, &node_list, identifiers, strings, err
 			);
 			if(*err) goto RET;
 			size_t fn_type = node_list.count - 1;
 
 			index += 1;
-			parse_block(
-				tokens, token_count, &index, &node_list, identifiers, err
-			);
-			if(*err) goto RET;
+
+			if(tokens[index].type == TOKEN_HASH_EXTERN) {
+				const DebugInfo extern_debug = tokens[index].debug.debug_info;
+				index += 1;
+				if(tokens[index].type != TOKEN_LPAREN) {
+					fprintf(stderr, "Error: Expected '(' at ");
+					lexer_print_debug_to_file(stderr, &tokens[index].debug.debug_info);
+					fprintf(stderr, "\n");
+					*err = ERROR_UNEXPECTED_DATA;
+					goto RET;
+				}
+
+				index += 1;
+
+				if(tokens[index].type != TOKEN_STRING_LIT) {
+					fprintf(stderr, "Error: Expected String Literal at ");
+					lexer_print_debug_to_file(stderr, &tokens[index].debug.debug_info);
+					fprintf(stderr, "\n");
+					*err = ERROR_UNEXPECTED_DATA;
+					goto RET;
+				}
+
+				dynarr_push(
+					&node_list,
+					&(AstNode) {
+						.string_lit = {
+							.type = AST_STRING_LIT,
+							.debug_info = tokens[index].debug.debug_info,
+							.id = tokens[index].string_lit.id,
+						},
+					},
+					err		
+				);
+				if(*err) goto RET;
+				const size_t name = node_list.count - 1;
+
+				index += 1;
+
+				if(tokens[index].type != TOKEN_RPAREN) {
+					fprintf(stderr, "Error: Expected ')' at ");
+					lexer_print_debug_to_file(stderr, &tokens[index].debug.debug_info);
+					fprintf(stderr, "\n");
+					*err = ERROR_UNEXPECTED_DATA;
+					goto RET;
+				}
+
+				dynarr_push(
+					&node_list,
+					&(AstNode) {
+						.extrn = {
+							.type = AST_EXTERN,
+							.debug_info = extern_debug,
+							.name = name,
+						},
+					},
+					err		
+				);
+				if(*err) goto RET;
+			} else {
+				parse_block(
+					tokens, token_count, &index, &node_list, identifiers, strings, err
+				);
+				if(*err) goto RET;
+			}
+
 			size_t block = node_list.count - 1;
 
 			dynarr_push(
@@ -1558,7 +1682,7 @@ void parser_gen_ast(
 		default:
 			fprintf(stderr, "Error: Expected Declaration, found ");
 			lexer_print_token_to_file(
-				stderr, &tokens[index], identifiers
+				stderr, &tokens[index], identifiers, strings
 			);
 			fprintf(stderr, "instead.\n");
 			*err = ERROR_UNEXPECTED_DATA;
@@ -1597,11 +1721,11 @@ void parser_clean_ast(AstNode *nodes, size_t node_count)
 		case AST_MODULE:
 			free(nodes[i].module.statements);
 			break;
-		
+
 		case AST_FN_CALL:
 			free(nodes[i].fn_call.args);
 			break;
-		
+
 		case AST_ARRAY_LIT:
 			free(nodes[i].array_lit.elems);
 			break;
@@ -1642,6 +1766,11 @@ void parser_clean_ast(AstNode *nodes, size_t node_count)
 		case AST_SLICE_ABYSS:
 		case AST_SUBSCRIPT:
 		case AST_STRUCT_ACCESS:
+		case AST_EXTERN:
+		case AST_STRING_LIT:
+		case AST_ZSTRING_LIT:
+		case AST_CSTRING_LIT:
+		case AST_DISCARD:
 			break;
 		}
 	}
@@ -1649,7 +1778,10 @@ void parser_clean_ast(AstNode *nodes, size_t node_count)
 
 void parser_print_ast_to_file(
 	FILE *file,
-	AstNode *nodes, size_t node_count, char *const *identifiers
+	AstNode *nodes,
+	size_t node_count,
+	char *const *identifiers,
+	char *const *strings
 )
 {
 	for(size_t i = 0; i < node_count; i++) {
@@ -1848,6 +1980,42 @@ void parser_print_ast_to_file(
 				"%zi.%zi",
 				nodes[i].struct_access.parent,
 				nodes[i].struct_access.member_id
+			);
+			break;
+
+		case AST_STRING_LIT:
+			fprintf(
+				file,
+				"String \"%s\"",
+				strings[nodes[i].string_lit.id]
+			);
+			break;
+		case AST_ZSTRING_LIT:
+			fprintf(
+				file,
+				"ZString \"%s\"",
+				strings[nodes[i].string_lit.id]
+			);
+			break;
+		case AST_CSTRING_LIT:
+			fprintf(
+				file,
+				"CString \"%s\"",
+				strings[nodes[i].string_lit.id]
+			);
+			break;
+		case AST_EXTERN:
+			fprintf(
+				file,
+				"#extern(%zi)",
+				nodes[i].extrn.name
+			);
+			break;
+		case AST_DISCARD:
+			fprintf(
+				file,
+				"discard %zi",
+				nodes[i].discard.value
 			);
 			break;
 		}

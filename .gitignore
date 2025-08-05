@@ -18,4 +18,5 @@ exitcode
 test_runner
 .ccls-cache/
 a.ll
+a.ll.opt
 ir

@@ -13,7 +13,9 @@ void codegen_init(
 	const char *target_triple,
 	const AstNode *nodes,
 	size_t node_count,
-	char *const	*identifiers
+	char *const	*identifiers,
+	char *const *strings,
+	size_t string_count
 )
 {
 	*cg	= (CodeGen)	{
@@ -21,6 +23,8 @@ void codegen_init(
 		.nodes = nodes,
 		.node_count	= node_count,
 		.identifiers = identifiers,
+		.strings = strings,
+		.string_count = string_count,
 		.fn_sig_count =	0,
 		.fn_sigs = NULL,
 		.metadata_counter =	0,
@@ -36,7 +40,7 @@ void codegen_clean(const CodeGen *cg)
 	if(cg->fn_sigs)	free(cg->fn_sigs);
 }
 
-static void	print_type(
+static void print_type(
 	FILE *file,
 	TypeContext	const *tc,
 	Type t,
@@ -49,15 +53,19 @@ static void	print_type(
 		*err = ERROR_INTERNAL;
 		goto RET;
 	case TYPE_PRIMITIVE_U8:
+	case TYPE_PRIMITIVE_S8:
 		FPUTS_OR_ERR(file, "i8");
 		break;
 	case TYPE_PRIMITIVE_U16:
+	case TYPE_PRIMITIVE_S16:
 		FPUTS_OR_ERR(file, "i16");
 		break;
 	case TYPE_PRIMITIVE_U32:
+	case TYPE_PRIMITIVE_S32:
 		FPUTS_OR_ERR(file, "i32");
 		break;
 	case TYPE_PRIMITIVE_U64:
+	case TYPE_PRIMITIVE_S64:
 		FPUTS_OR_ERR(file, "i64");
 		break;
 	case TYPE_PRIMITIVE_VOID:
@@ -448,6 +456,14 @@ Type type_of_expr(
 		}
 	} break;
 
+	case AST_STRING_LIT:
+	case AST_ZSTRING_LIT:
+		type = (Type) {.slice = {.type = TYPE_SLICE_CONST, .base = 0}};
+		break;
+	case AST_CSTRING_LIT:
+		type = (Type) {.pointer = {.type = TYPE_POINTER_CONST, .base = 0}};
+		break;
+
 	default:
 		fprintf(stderr, "Expected Expression at ");
 		lexer_print_debug_to_file(stderr, &expr.debug.debug_info);
@@ -515,7 +531,7 @@ static void	gen_fn_call(
 		goto RET;
 	}
 
-	if(!types_are_equal(expected, sig.ret))	{
+	if(expected.type && !types_are_equal(expected, sig.ret))	{
 		fprintf(stderr,	"Function Returns '");
 		type_print(stderr, &scope->tc, sig.ret);
 		fprintf(stderr,	"',	Expected '");
@@ -564,8 +580,11 @@ static void	gen_fn_call(
 
 	print_type(cg->output, &scope->tc, sig.ret,	err);
 
-	FPRINTF_OR_ERR(cg->output, " @%s(", cg->identifiers[sig.id]);
-	if(*err) goto RET;
+	if(sig.linkage_name != SIZE_MAX) {
+		FPRINTF_OR_ERR(cg->output, " @%s(", cg->strings[sig.linkage_name]);
+	} else {
+		FPRINTF_OR_ERR(cg->output, " @%s(", cg->identifiers[sig.id]);
+	}
 
 	for(size_t i = 0; i	< sig.arg_count; i++) {
 		if(sig.args[i].type == TYPE_SLICE_CONST
@@ -1120,6 +1139,26 @@ static void	gen_extend_integer(
 		*ssa = *temp_counter;
 		*temp_counter += 1;
 		break;
+	
+	case TYPE_PRIMITIVE_S8:
+	case TYPE_PRIMITIVE_S16:
+	case TYPE_PRIMITIVE_S32:
+	case TYPE_PRIMITIVE_S64:
+		FPRINTF_OR_ERR(
+			cg->output,
+			"%%%zi = sext ",
+			*temp_counter
+		);
+		print_type(cg->output, &scope->tc, current,	err);
+		if(*err) goto RET;
+		FPRINTF_OR_ERR(cg->output, " %%%zi to ", *ssa);
+		print_type(cg->output, &scope->tc, needed, err);
+		if(*err) goto RET;
+		FPUTS_OR_ERR(cg->output, "\n");
+		*ssa = *temp_counter;
+		*temp_counter += 1;
+		break;
+
 	default:
 		fprintf(stderr,	"Unable	to Extend Type '");
 		type_print(stderr, &scope->tc, current);
@@ -2440,6 +2479,41 @@ static void gen_expr(
 		);
 	} break;
 
+	case AST_STRING_LIT: {
+		FPRINTF_OR_ERR(
+			cg->output,
+			"%%%zi = insertvalue {ptr, i64} poison, ptr @.S%zi, 0\n"
+			"%%%zi = sub i64 @.SL%zi, 1\n"
+			"%%%zi = insertvalue {ptr, i64} %%%zi, i64 %%%zi, 1\n",
+			*temp_counter, expr->string_lit.id,
+			*temp_counter + 1, expr->string_lit.id,
+			*temp_counter + 2, *temp_counter, *temp_counter + 1
+		);
+		*temp_counter += 3;
+	} break;
+
+	case AST_ZSTRING_LIT: {
+		FPRINTF_OR_ERR(
+			cg->output,
+			"%%%zi = insertvalue {ptr, i64} poison, ptr @.S%zi, 0\n"
+			"%%%zi = insertvalue {ptr, i64} %%%zi, i64 @.SL%zi, 1\n",
+			*temp_counter, expr->string_lit.id,
+			*temp_counter + 1, *temp_counter, expr->string_lit.id
+		);
+		*temp_counter += 2;
+	} break;
+
+	case AST_CSTRING_LIT: {
+		FPRINTF_OR_ERR(
+			cg->output,
+			"%%%zi = insertvalue {ptr} poison, ptr @.S%zi, 0\n"
+			"%%%zi = extractvalue {ptr} %%%zi, 0\n",
+			*temp_counter, expr->string_lit.id,
+			*temp_counter + 1, *temp_counter
+		);
+		*temp_counter += 2;
+	} break;
+
 	default:
 		fprintf(stderr,	"Expected Expression at	");
 		lexer_print_debug_to_file(stderr, &expr->debug.debug_info);
@@ -2470,6 +2544,62 @@ static void	gen_fn_def(
 	const AstNode fn = cg->nodes[index];
 
 	const FnSig	sig	= cg->fn_sigs[fnnum];
+
+	const AstNode block	= cg->nodes[fn.fn_def.block];
+	if(block.type == AST_EXTERN) {
+		FPUTS_OR_ERR(cg->output, "declare dso_local ");
+		print_type(cg->output, &scope.tc, sig.ret, err);
+		if(*err) goto RET;
+
+		FPRINTF_OR_ERR(cg->output, " @%s(", cg->strings[sig.linkage_name]);
+
+		for(size_t i = 0; i	< sig.arg_count; i++) {
+			if(sig.args[i].type == TYPE_SLICE_CONST
+			   || sig.args[i].type == TYPE_SLICE_ABYSS
+			   || sig.args[i].type == TYPE_SLICE_VAR
+			) {
+				if(fprintf(
+					cg->output,
+					"ptr noundef %%%s.0, i64 noundef %%%s.1\n",
+					cg->identifiers[sig.arg_ids[i]],
+					cg->identifiers[sig.arg_ids[i]]
+				) < 0) {
+					fprintf(stderr, "Failed to Write to IR File\n");
+					*err = ERROR_IO;
+					dynarr_clean(&vars);
+					goto RET;
+				}
+			} else {
+				print_type(cg->output, &scope.tc, sig.args[i], err);
+				if(*err) {
+					dynarr_clean(&vars);
+				}
+
+				if(!fprintf(
+					cg->output,
+					" noundef %%%s",
+					cg->identifiers[sig.arg_ids[i]]
+				)) {
+					fprintf(stderr, "Failed to Write to IR File!\n");
+					*err = ERROR_IO;
+					dynarr_clean(&vars);
+					goto RET;
+				}
+			}
+
+			if(i != sig.arg_count - 1) {
+				if(fprintf(cg->output, ", ") < 0) {
+					fprintf(stderr, "Failed to Write to IR File!\n");
+					*err = ERROR_IO;
+					dynarr_clean(&vars);
+					goto RET;
+				}
+			}
+		}
+		FPUTS_OR_ERR(cg->output, ")\n");
+
+		goto RET;
+	}
 
 	FPUTS_OR_ERR(cg->output,  "define dso_local ");
 	print_type(cg->output, &scope.tc, sig.ret, err);
@@ -2539,8 +2669,6 @@ static void	gen_fn_def(
 
 	FPUTS_OR_ERR(cg->output, ") {\n");
 
-	const AstNode block	= cg->nodes[fn.fn_def.block];
-	assert(block.type == AST_BLOCK);
 
 	for(size_t i = 0; i < sig.arg_count; i ++) {
 		if(sig.args[i].type == TYPE_SLICE_CONST
@@ -2756,6 +2884,18 @@ static void	gen_fn_def(
 			if(*err) goto RET;
 			break;
 
+		case AST_DISCARD:
+			gen_expr(
+				cg,
+				&cg->nodes[statement->discard.value],
+				(Type) {.type = TYPE_NONE},
+				&temp_counter,
+				&scope,
+				err
+			);
+			if(*err) goto RET;
+			break;
+
 		default:
 			fprintf(stderr,	"Expected Statement	at ");
 			lexer_print_debug_to_file(
@@ -2817,6 +2957,37 @@ void codegen_gen(CodeGen *cg, Error	*err)
 	);
 	cg->metadata_counter = 5;
 
+	for(size_t i = 0; i < cg->string_count; i++) {
+		size_t len = strlen(cg->strings[i]) + 1;
+		FPRINTF_OR_ERR(
+			cg->output,
+			"@.S%zi = internal constant [%zi x i8] c\"",
+			i, len
+		);
+		for(size_t j = 0; j < len; j++) {
+			switch(cg->strings[i][j]) {
+			case '\n':
+				FPUTS_OR_ERR(cg->output, "\\0A");
+				break;
+			case '\"':
+				FPUTS_OR_ERR(cg->output, "\\22");
+				break;
+			default:
+				do {} while(0);
+				char c[2] = {cg->strings[i][j], 0};
+				FPUTS_OR_ERR(cg->output, c);
+				break;
+			}
+		}
+
+		FPRINTF_OR_ERR(
+			cg->output,
+			"\\00\"\n"
+			"@.SL%zi = internal constant i64 %zi\n",
+			i, len
+		);
+	}
+
 	assert(cg->nodes[0].type ==	AST_MODULE);
 	size_t *statements = cg->nodes[0].module.statements;
 	const size_t statement_count = cg->nodes[0].module.statement_count;
@@ -2844,6 +3015,7 @@ void codegen_gen(CodeGen *cg, Error	*err)
 				);
 				if(*err) {
 					free(args);
+					free(arg_ids);
 					goto RET;
 				}
 
@@ -2861,15 +3033,22 @@ void codegen_gen(CodeGen *cg, Error	*err)
 
 			if(*err) {
 				free(args);
+				free(arg_ids);
 				goto RET;
 			}
 
 			size_t id = cg->nodes[cg->nodes[index].fn_def.ident].ident.id;
+			size_t linkage_name = SIZE_MAX;
+		   	if(cg->nodes[cg->nodes[index].fn_def.block].type == AST_EXTERN) {
+				const AstNode name = cg->nodes[cg->nodes[index].fn_def.block];
+				linkage_name = cg->nodes[name.extrn.name].string_lit.id;
+			}
 
 			dynarr_push(
 				&fn_sigs,
 				&(FnSig) {
 					.id = id,
+					.linkage_name = linkage_name,
 					.ret = ret,
 					.arg_count = type->fn_type.arg_count,
 					.args =	args,
@@ -2880,6 +3059,7 @@ void codegen_gen(CodeGen *cg, Error	*err)
 
 			if(*err) {
 				free(args);
+				free(arg_ids);
 				goto RET;
 			}
 		}

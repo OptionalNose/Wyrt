@@ -7,6 +7,7 @@ typedef struct {
 	const char *file;
 	int exitcode;
 	bool should_fail;
+	const char *out;
 } Test;
 
 const Test tests[] = {
@@ -27,6 +28,7 @@ int main(void)
 		char *cmd = malloc(20 + strlen(tests[i].file) + 7 + 1);
 		FILE *file = NULL;
 		FILE *err = NULL;
+		FILE *out = NULL;
 		cmd[0] = 0;
 		strcat(cmd, "./wyrt_Release test/");
 		strcat(cmd, tests[i].file);
@@ -43,7 +45,25 @@ int main(void)
 			goto PASS;
 		}
 
-		system("./a.out ; echo $? > exitcode");
+		system("./a.out > out ; echo $? > exitcode");
+
+		out = fopen("out", "rb");
+		if(!out) {
+			printf(
+				"[" BRIGHT_RED "ERR" RESET "] Unable to open 'out'.\n"
+			);
+			goto CLEAN_AFTER;
+		}
+		if(tests[i].out) {
+			const char *expected = tests[i].out;
+			while(*expected) {
+				if(*(expected++) != fgetc(out)) {
+					printf("[" RED "FAIL" RESET "] Mismatched Output.\n");
+					goto CLEAN_AFTER;
+				}
+			}
+		}
+
 
 		file = fopen("exitcode", "rb");
 		if(!file) {
@@ -74,6 +94,10 @@ CLEAN_AFTER:
 		if(err) {
 			fclose(err);
 			remove("err");
+		}
+		if(out) {
+			fclose(out);
+			remove("out");
 		}
 	}
 

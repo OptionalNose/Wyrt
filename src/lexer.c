@@ -1,4 +1,5 @@
 #include "lexer.h"
+#include "util.h"
 
 #include <ctype.h>
 #include <string.h>
@@ -18,10 +19,10 @@ void lexer_init(Lexer *lex, char *file_path, Error *err)
 	fseek(file, 0, SEEK_END);
 	lex->file_length = ftell(file);
 	fseek(file, 0, SEEK_SET);
-	
+
 	lex->file_contents = malloc(lex->file_length);
 	CHECK_MALLOC(lex->file_contents);
-	
+
 	if(
 		fread(
 			lex->file_contents,
@@ -33,8 +34,8 @@ void lexer_init(Lexer *lex, char *file_path, Error *err)
 		*err = ERROR_IO;
 		goto RET;
 	}
-	
-	
+
+
 RET:
 	if(file) fclose(file);
 	return;
@@ -45,10 +46,10 @@ void lexer_clean(Lexer *lex)
 	if(lex->file_contents) free(lex->file_contents);
 }
 
-void lexer_clean_identifiers(char **identifiers, size_t identifier_count)
+void lexer_clean_strings(char **identifiers, size_t identifier_count)
 {
 	if(!identifiers) return;
-	for(size_t i = 5; i < identifier_count; i++) {
+	for(size_t i = 0; i < identifier_count; i++) {
 		free(identifiers[i]);
 	}
 	free(identifiers);
@@ -108,34 +109,130 @@ static void backup(
 	}
 }
 
+static Token lex_string(
+	Lexer *lex,
+	DynArr *strings,
+	DynArr *string_builder,
+	size_t *pos,
+	uint32_t *line,
+	uint32_t *col,
+	uint32_t *prev_col,
+	Error *err
+)
+{
+	string_builder->count = 0;
+	Token tok = {
+		.debug = {
+			.debug_info = (DebugInfo) {
+				.file = lex->file_path,
+				.line = *line,
+				.col = *col,
+			}
+		}
+	};
+	int c;
+
+	while((
+		c = get_char(lex, pos, line, col, prev_col)
+		) != '"'
+		&& c != EOF
+	) {
+		if(c == '\\') {
+			c = get_char(lex, pos, line, col, prev_col);
+			switch(c) {
+			case 'n':
+				c = '\n';
+				break;
+			default:
+				fprintf(
+					stderr,
+					"Illegal Escape Sequence '\\%c' at ",
+					c
+				);
+				lexer_print_debug_to_file(
+					stderr,
+					&tok.debug.debug_info
+				);
+				fprintf(stderr, "\n");
+				*err = ERROR_UNEXPECTED_DATA;
+				goto RET;
+			}
+		}
+
+		dynarr_push(string_builder, &c, err);
+		if(*err) goto RET;
+	}
+	dynarr_push(string_builder, &(char){'\0'}, err);
+	if(*err) goto RET;
+
+	size_t id = SIZE_MAX;
+	for(size_t i =0; i < strings->count; i++) {
+		if(
+			strcmp(
+				string_builder->data,
+				*(char**)dynarr_at(strings, i)
+			) == 0
+		) {
+			id = i;
+			break;
+		}
+	}
+	if(id == SIZE_MAX) {
+		id = strings->count;
+		char *str = malloc(string_builder->count);
+		CHECK_MALLOC(str);
+		strcpy(str, string_builder->data);
+		dynarr_push(strings, &str, err);
+		if(*err) goto RET;
+	}
+
+	tok.string_lit.type = TOKEN_STRING_LIT;
+	tok.string_lit.id = id;
+
+RET:
+	return tok;
+}
+
 void lexer_tokenize(
 	Lexer *lex,
 	Token **tokens, size_t *token_count,
 	char ***identifiers, size_t *identifier_count,
+	char ***strings, size_t *string_count,
 	Error *err
 )
 {
 	DynArr toks;
 	DynArr idents;
+	DynArr strs;
 	dynarr_init(&toks, sizeof(Token));
 	dynarr_init(&idents, sizeof(char *));
+	dynarr_init(&strs, sizeof(char *));
 
 	size_t pos = 0;
 	uint32_t line = 1;
 	uint32_t col = 1;
 	uint32_t prev_col = 1;
 
-	dynarr_push(&idents, &(char *){"u8"}, err);
-	if(*err) goto RET;
-	dynarr_push(&idents, &(char *){"u16"}, err);
-	if(*err) goto RET;
-	dynarr_push(&idents, &(char *){"u32"}, err);
-	if(*err) goto RET;
-	dynarr_push(&idents, &(char *){"u64"}, err);
-	if(*err) goto RET;
-	dynarr_push(&idents, &(char *){"void"}, err);
-	if(*err) goto RET;
-	
+	const char *primitive_types[] = {
+		"u8",
+		"s8",
+		"u16",
+		"s16",
+		"u32",
+		"s32",
+		"u64",
+		"s64",
+		"void"
+	};
+	const int primitive_type_count = (sizeof primitive_types) / (sizeof primitive_types[0]);
+
+	for(int i = 0; i < primitive_type_count; i++) {
+		char *str = malloc(strlen(primitive_types[i]) + 1);
+		CHECK_MALLOC(str);
+		strcpy(str, primitive_types[i]);
+		dynarr_push(&idents, &str, err);
+		if(*err) goto RET;
+	} 
 
 	DynArr string_builder;
 	dynarr_init(&string_builder, sizeof(char));
@@ -155,7 +252,7 @@ void lexer_tokenize(
 				.debug_info.file = lex->file_path,
 			}
 		};
-		
+
 		dynarr_push(&string_builder, &c, err);
 		if(*err) goto RET;
 
@@ -216,7 +313,7 @@ void lexer_tokenize(
 			}
 			backup(lex, &pos, &line, &col, prev_col);
 			tok.type = TOKEN_MINUS;
-			goto NEXT_TOK;			
+			goto NEXT_TOK;
 		case ',':
 			tok.type = TOKEN_COMMA;
 			goto NEXT_TOK;
@@ -232,10 +329,63 @@ void lexer_tokenize(
 		case '.':
 			tok.type = TOKEN_PERIOD;
 			goto NEXT_TOK;
+		case 'c':
+			c = get_char(lex, &pos, &line, &col, &prev_col);
+			if(c == '"') {
+				tok = lex_string(
+					lex,
+					&strs,
+					&string_builder,
+					&pos,
+					&line,
+					&col,
+					&prev_col,
+					err
+				);
+				if(*err) goto RET;
+				tok.type = TOKEN_CSTRING_LIT;
+				goto NEXT_TOK;
+			}
+			backup(lex, &pos, &line, &col, prev_col);
+			c = 'c';
+			break;
+		case 'z':
+			c = get_char(lex, &pos, &line, &col, &prev_col);
+			if(c == '"') {
+				tok = lex_string(
+					lex,
+					&strs,
+					&string_builder,
+					&pos,
+					&line,
+					&col,
+					&prev_col,
+					err
+				);
+				if(*err) goto RET;
+				tok.type = TOKEN_ZSTRING_LIT;
+				goto NEXT_TOK;
+			}
+			backup(lex, &pos, &line, &col, prev_col);
+			c = 'z';
+			break;
+		case '"':
+			tok = lex_string(
+				lex,
+				&strs,
+				&string_builder,
+				&pos,
+				&line,
+				&col,
+				&prev_col,
+				err
+			);
+			if(*err) goto RET;
+			goto NEXT_TOK;
 		default:
 			break;
 		}
-	
+
 		if(isdigit(*(char *)dynarr_at(&string_builder, 0))) {
 			intmax_t val = *(char *)dynarr_at(&string_builder, 0) - '0';
 			while(
@@ -253,7 +403,7 @@ void lexer_tokenize(
 				*err = ERROR_UNEXPECTED_DATA;
 				goto RET;
 			}
-			
+
 			tok.type = TOKEN_INT_LIT;
 			tok.int_lit.val = val;
 			backup(lex, &pos, &line, &col, prev_col);
@@ -298,6 +448,9 @@ void lexer_tokenize(
 			} else if(strcmp(string_builder.data, "struct") == 0) {
 				tok.type = TOKEN_STRUCT;
 				goto NEXT_TOK;
+			} else if(strcmp(string_builder.data, "discard") == 0) {
+				tok.type = TOKEN_DISCARD;
+				goto NEXT_TOK;
 			}
 
 			bool found = false;
@@ -315,7 +468,7 @@ void lexer_tokenize(
 			}
 			if(!found) {
 				id = idents.count;
-				char *identifier = malloc(string_builder.count + 1);
+				char *identifier = malloc(string_builder.count);
 				CHECK_MALLOC(identifier);
 				strcpy(identifier, string_builder.data);
 				dynarr_push(&idents, &identifier, err);
@@ -327,11 +480,42 @@ void lexer_tokenize(
 			goto NEXT_TOK;
 		}
 
+		if(c == '#') {
+			string_builder.count = 0;
+			while(
+				is_valid_in_identifier(
+					c = get_char(lex, &pos, &line, &col, &prev_col)
+				)
+				&& c != EOF
+			) {
+				dynarr_push(&string_builder, &c, err);
+				if(*err) goto RET;
+			}
+			dynarr_push(&string_builder, &(char) {'\0'}, err);
+			if(*err) goto RET;
+
+			backup(lex, &pos, &line, &col, prev_col);
+
+			if(strcmp(string_builder.data, "extern") == 0) {
+				tok.type = TOKEN_HASH_EXTERN;
+			} else {
+				fprintf(
+					stderr,
+					"Illegal Directive '#%s' at ",
+					(char*)string_builder.data
+				);
+				lexer_print_debug_to_file(stderr, &tok.debug.debug_info);
+				fprintf(stderr, "\n");
+				*err = ERROR_UNEXPECTED_DATA;
+			}
+			goto NEXT_TOK;
+		}
+
 NEXT_TOK:
 		dynarr_push(&toks, &tok, err);
 		if(*err) goto RET;
 	}
-	
+
 RET:
 	dynarr_push(
 		&toks,
@@ -351,6 +535,8 @@ RET:
 	dynarr_clean(&string_builder);
 	*identifiers = (char **)idents.data;
 	*identifier_count = idents.count;
+	*strings = (char **)strs.data;
+	*string_count = strs.count;
 	*tokens = (Token *)toks.data;
 	*token_count = toks.count;
 	return;
@@ -359,7 +545,8 @@ RET:
 void lexer_print_token_to_file(
 	FILE *file,
 	Token const *tok,
-	char *const *identifiers
+	char *const *identifiers,
+	char *const *strings
 )
 {
 	switch(tok->type) {
@@ -426,6 +613,27 @@ void lexer_print_token_to_file(
 	case TOKEN_INT_LIT:
 		fprintf(file, "Int '%ji'", tok->int_lit.val);
 		break;
+	case TOKEN_STRING_LIT:
+		fprintf(
+			file,
+			"String '%s'",
+			strings[tok->string_lit.id]
+		);
+		break;
+	case TOKEN_ZSTRING_LIT:
+		fprintf(
+			file,
+			"ZString '%s'",
+			strings[tok->string_lit.id]
+		);
+		break;
+	case TOKEN_CSTRING_LIT:
+		fprintf(
+			file,
+			"CString '%s'",
+			strings[tok->string_lit.id]
+		);
+		break;
 	case TOKEN_STAR:
 		fprintf(file, "'*'");
 		break;
@@ -459,8 +667,14 @@ void lexer_print_token_to_file(
 	case TOKEN_STRUCT:
 		fprintf(file, "struct");
 		break;
+	case TOKEN_HASH_EXTERN:
+		fprintf(file, "#extern");
+		break;
+	case TOKEN_DISCARD:
+		fprintf(file, "discard");
+		break;
 	}
-	
+
 	fputs(" at ", file);
 	lexer_print_debug_to_file(file, &tok->debug.debug_info);
 	fputc('\n', file);

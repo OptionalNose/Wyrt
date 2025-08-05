@@ -39,6 +39,8 @@ int main(int argc, char **argv)
 	Token *tokens = NULL;
 	char **identifiers = NULL;
 	size_t identifier_count = 0;
+	char **strings = NULL;
+	size_t string_count = 0;
 	size_t token_count = 0;
 
 	AstNode *nodes = NULL;
@@ -164,6 +166,7 @@ int main(int argc, char **argv)
 		&lexer,
 		&tokens, &token_count,
 		&identifiers, &identifier_count,
+		&strings, &string_count,
 		&err
 	);
 	if(err) goto RET;
@@ -179,14 +182,17 @@ int main(int argc, char **argv)
 		printf("INFO: %zi Tokens.\n", token_count);
 		for(size_t i = 0; i < token_count; i++) {
 			lexer_print_token_to_file(
-				file, &tokens[i], identifiers
+				file,
+				&tokens[i],
+				identifiers,
+				strings
 			);
 		}
 		fclose(file);
 	}
 
 	parser_gen_ast(
-		tokens, token_count, &nodes, &node_count, identifiers, &err
+		tokens, token_count, &nodes, &node_count, identifiers, strings, &err
 	);
 	if(err) goto RET;
 
@@ -202,7 +208,10 @@ int main(int argc, char **argv)
 
 		parser_print_ast_to_file(
 			file,
-			nodes, node_count, identifiers
+			nodes,
+			node_count,
+			identifiers,
+			strings
 		);
 
 		fclose(file);
@@ -232,7 +241,9 @@ int main(int argc, char **argv)
 		options.target,
 		nodes,
 		node_count,
-		identifiers
+		identifiers,
+		strings,
+		string_count
 	);
 
 	codegen_gen(&codegen, &err);
@@ -292,7 +303,8 @@ RET:
 	if(link.str) free(link.str);
 	if(compile.str) free(compile.str);
 	lexer_clean(&lexer);
-	lexer_clean_identifiers(identifiers, identifier_count);
+	lexer_clean_strings(identifiers, identifier_count);
+	lexer_clean_strings(strings, string_count);
 	if(nodes) parser_clean_ast(nodes, node_count);
 	if(nodes) free(nodes);
 	if(tokens) free(tokens);

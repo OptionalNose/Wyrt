@@ -1,59 +1,67 @@
+// vim: set ft=c:
+
 {
-	.file = "mvp.wyrt",
+	.file = "mvp.w",
 	.exitcode = 25,
 },
 
 {
-	.file = "binop.wyrt",
+	.file = "binop.w",
 	.exitcode = 33,
 },
 
 {
-	.file = "const.wyrt",
+	.file = "const.w",
 	.exitcode = 33,
 },
 
 {
-	.file = "fn_call.wyrt",
+	.file = "fn_call.w",
 	.exitcode = 33,
 },
 
 {
-	.file = "var.wyrt",
+	.file = "var.w",
 	.exitcode = 33,
 },
 
 {
-	.file = "ptrs.wyrt",
+	.file = "ptrs.w",
 	.exitcode = 49,
 },
 
 {
-	.file = "failing_types.wyrt",
+	.file = "failing_types.w",
 	.should_fail = true,
 },
 
 {
-	.file = "array_and_slice.wyrt",
+	.file = "array_and_slice.w",
 	.exitcode = 46,
 },
 
 {
-	.file = "failing_array_len_mismatch.wyrt",
+	.file = "failing_array_len_mismatch.w",
 	.should_fail = true,
 },
 
 {
-	.file = "failing_struct_incompatible.wyrt",
+	.file = "failing_struct_incompatible.w",
 	.should_fail = true,
 },
 
 {
-	.file = "struct.wyrt",
+	.file = "struct.w",
 	.exitcode = 7,
 },
 
 {
-	.file = "addressing.wyrt",
+	.file = "addressing.w",
 	.exitcode = 8,
 },
+
+{
+	.file = "helloworld.w",
+	.out = "Hello, World!\n",
+	.exitcode = 0,
+}

@@ -26,6 +26,15 @@ RET:
 	return;
 }
 
+void dynarr_reserve(DynArr *da, size_t count, Error *err)
+{
+	da->capacity += count;
+	da->data = realloc(da->data, da->capacity * da->elem_size);
+	CHECK_MALLOC(da->data);
+RET:
+	return;
+}
+
 void dynarr_shrink(DynArr *da, Error *err)
 {
 	da->capacity = da->count;

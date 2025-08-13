@@ -23,7 +23,8 @@ typedef enum {
 	TYPE_SLICE_ABYSS,
 	TYPE_SLICE_VAR,
 
-	TYPE_STRUCT
+	TYPE_STRUCT,
+	TYPE_TYPEDEF
 } TypeType;
 
 typedef union {
@@ -51,6 +52,12 @@ typedef union {
 		size_t *member_name_ids;
 		size_t member_count;
 	} struct_type;
+
+	struct {
+		TypeType type;
+		size_t id;
+		size_t backing;
+	} typdef;
 } Type;
 
 typedef struct {
@@ -63,7 +70,6 @@ void types_clean(TypeContext const *tc);
 
 size_t types_register(TypeContext *tc, Type t, Error *err);
 size_t types_register_nexist(TypeContext *tc, Type t, Error *err);
-size_t types_get_size(TypeContext const *tc, Type t);
 Type type_from_ast(
 	TypeContext *tc,
 	AstNode const *nodes,
@@ -71,10 +77,11 @@ Type type_from_ast(
 	Error *err
 );
 bool types_are_equal(Type a, Type b);
-bool types_are_compatible(Type a, Type b);
-void type_print(FILE *file, TypeContext const *tc, Type t);
+bool types_are_compatible(TypeContext const *tc, Type a, Type b);
+void type_print(FILE *file, TypeContext const *tc, Type t, char *const *identifiers);
 bool type_is_arithmetic(Type t);
 bool type_is_unsigned(Type t);
+Type type_resolve(TypeContext const *tc, Type t);
 
 void types_copy(
 	TypeContext *restrict dst,

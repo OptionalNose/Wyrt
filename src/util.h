@@ -48,6 +48,7 @@ void dynarr_init(DynArr *da, size_t elem_size);
 void dynarr_clean(DynArr const *da);
 
 void dynarr_alloc(DynArr *da, size_t count, Error *e);
+void dynarr_reserve(DynArr *da, size_t count, Error *e);
 void dynarr_shrink(DynArr *da, Error *e);
 void *dynarr_at(DynArr const *da, size_t index);
 void *dynarr_from_back(DynArr const *da, size_t from_back);

@@ -310,6 +310,9 @@ void lexer_tokenize(
 			if(c == '=') {
 				tok.type = TOKEN_SUB_ASSIGN;
 				goto NEXT_TOK;
+			} else if(c == '>') {
+				tok.type = TOKEN_ARROW;
+				goto NEXT_TOK;
 			}
 			backup(lex, &pos, &line, &col, prev_col);
 			tok.type = TOKEN_MINUS;
@@ -450,6 +453,9 @@ void lexer_tokenize(
 				goto NEXT_TOK;
 			} else if(strcmp(string_builder.data, "discard") == 0) {
 				tok.type = TOKEN_DISCARD;
+				goto NEXT_TOK;
+			} else if(strcmp(string_builder.data, "typedef") == 0) {
+				tok.type = TOKEN_TYPEDEF;
 				goto NEXT_TOK;
 			}
 
@@ -672,6 +678,12 @@ void lexer_print_token_to_file(
 		break;
 	case TOKEN_DISCARD:
 		fprintf(file, "discard");
+		break;
+	case TOKEN_TYPEDEF:
+		fprintf(file, "typedef");
+		break;
+	case TOKEN_ARROW:
+		fprintf(file, "'->'");
 		break;
 	}
 

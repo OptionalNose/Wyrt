@@ -80,60 +80,6 @@ size_t types_register_nexist(TypeContext *tc, Type t, Error *err)
 	return types_register(tc, t, err);
 }
 
-size_t types_get_size(TypeContext const *tc, Type t)
-{
-	switch(t.type) {
-	case TYPE_NONE:
-		return 0;
-	case TYPE_PRIMITIVE_U8:
-	case TYPE_PRIMITIVE_S8:
-		return 1;
-	case TYPE_PRIMITIVE_U16:
-	case TYPE_PRIMITIVE_S16:
-		return 2;
-	case TYPE_PRIMITIVE_U32:
-	case TYPE_PRIMITIVE_S32:
-		return 4;
-	case TYPE_PRIMITIVE_U64:
-	case TYPE_PRIMITIVE_S64:
-		return 8;
-	case TYPE_PRIMITIVE_VOID:
-		return 0;
-	case TYPE_POINTER_CONST:
-	case TYPE_POINTER_ABYSS:
-	case TYPE_POINTER_VAR:
-		return 8;
-	case TYPE_ARRAY:
-		return t.array.len * types_get_size(tc, tc->types[t.array.base]); 
-	case TYPE_SLICE_CONST:
-	case TYPE_SLICE_ABYSS:
-	case TYPE_SLICE_VAR:
-		return 16;
-	case TYPE_STRUCT:
-		do {} while(0);
-
-		size_t struct_size = 0;
-
-		for(size_t i = 0; i < t.struct_type.member_count; i++) {
-			size_t member_size = types_get_size(tc, tc->types[t.struct_type.member_types[i]]);
-			if(struct_size % member_size != 0) { // alignment
-				struct_size += member_size - (struct_size % member_size);
-			}
-			struct_size += member_size;
-		}
-
-		if(t.struct_type.member_count) {
-			size_t first_size = types_get_size(tc, tc->types[t.struct_type.member_types[0]]);
-			if(struct_size % first_size != 0) { //alignment
-				struct_size += first_size - (struct_size % first_size);
-			}
-		}
-
-		return struct_size;
-
-	}
-}
-
 Type type_from_ast(TypeContext *tc, AstNode const *nodes, size_t i, Error *err)
 {
 	Type t = { 0 };
@@ -170,12 +116,25 @@ Type type_from_ast(TypeContext *tc, AstNode const *nodes, size_t i, Error *err)
 		case 8:
 			t = (Type) { .type = TYPE_PRIMITIVE_VOID };
 			break;
-		default:
-			fprintf(stderr, "Identifier is not a Type at ");
-			lexer_print_debug_to_file(stderr, &node->debug.debug_info);
-			fprintf(stderr, "\n");
-			*err = ERROR_UNEXPECTED_DATA;
-			goto RET;
+		default: {
+			size_t index = SIZE_MAX;
+			for(size_t j = 0; j < tc->count; j++) {
+				if(tc->types[j].type == TYPE_TYPEDEF
+					&& tc->types[j].typdef.id == id
+				) {
+					index = j;
+					break;
+				}
+			}
+			if(index == SIZE_MAX) {
+				fprintf(stderr, "Identifier is not a Type at ");
+				lexer_print_debug_to_file(stderr, &node->debug.debug_info);
+				fprintf(stderr, "\n");
+				*err = ERROR_UNEXPECTED_DATA;
+				goto RET;
+			}
+			t = tc->types[index];
+		} break;
 		}
 		break;
 
@@ -345,11 +304,19 @@ bool types_are_equal(Type a, Type b)
 			}
 		}
 		return true;
+
+	case TYPE_TYPEDEF:
+		if(a.typdef.id == b.typdef.id) return true;
+		return false;
 	}
 }
 
-bool types_are_compatible(Type a, Type b)
+bool types_are_compatible(TypeContext const *tc, Type a, Type b)
 {
+	while(b.type == TYPE_TYPEDEF) {
+		b = tc->types[b.typdef.backing];
+	}
+
 	switch(a.type) {
 	case TYPE_NONE:
 	case TYPE_PRIMITIVE_VOID:
@@ -432,10 +399,13 @@ bool types_are_compatible(Type a, Type b)
 			}
 		}
 		return true;
+	case TYPE_TYPEDEF:
+		return types_are_equal(tc->types[a.typdef.backing], b);
+		break;
 	}
 }
 
-void type_print(FILE *file, TypeContext const *tc, Type t)
+void type_print(FILE *file, TypeContext const *tc, Type t, char *const *identifiers)
 {
 	switch(t.type) {
 	case TYPE_NONE:
@@ -470,31 +440,31 @@ void type_print(FILE *file, TypeContext const *tc, Type t)
 		break;
 	case TYPE_POINTER_CONST:
 		fprintf(file, "&const ");
-		type_print(file, tc, tc->types[t.pointer.base]);
+		type_print(file, tc, tc->types[t.pointer.base], identifiers);
 		break;
 	case TYPE_POINTER_ABYSS:
 		fprintf(file, "&abyss ");
-		type_print(file, tc, tc->types[t.pointer.base]);
+		type_print(file, tc, tc->types[t.pointer.base], identifiers);
 		break;
 	case TYPE_POINTER_VAR:
 		fprintf(file, "&var ");
-		type_print(file, tc, tc->types[t.pointer.base]);
+		type_print(file, tc, tc->types[t.pointer.base], identifiers);
 		break;
 	case TYPE_ARRAY:
 		fprintf(file, "[%zi]", t.array.len);
-		type_print(file, tc, tc->types[t.array.base]);
+		type_print(file, tc, tc->types[t.array.base], identifiers);
 		break;
 	case TYPE_SLICE_CONST:
 		fprintf(file, "[]const ");
-		type_print(file, tc, tc->types[t.slice.base]);
+		type_print(file, tc, tc->types[t.slice.base], identifiers);
 		break;
 	case TYPE_SLICE_ABYSS:
 		fprintf(file, "[]abyss ");
-		type_print(file, tc, tc->types[t.slice.base]);
+		type_print(file, tc, tc->types[t.slice.base], identifiers);
 		break;
 	case TYPE_SLICE_VAR:
 		fprintf(file, "[]var ");
-		type_print(file, tc, tc->types[t.slice.base]);
+		type_print(file, tc, tc->types[t.slice.base], identifiers);
 		break;
 	case TYPE_STRUCT:
 		fprintf(file, "struct{");
@@ -502,10 +472,13 @@ void type_print(FILE *file, TypeContext const *tc, Type t)
 			type_print(
 				file,
 				tc,
-				tc->types[t.struct_type.member_types[i]]
+				tc->types[t.struct_type.member_types[i]],
+				identifiers
 			);
 		}
 		break;
+	case TYPE_TYPEDEF:
+		fprintf(file, "\"%s\"", identifiers[t.typdef.id]);
 	}
 }
 
@@ -578,4 +551,13 @@ void types_copy(
 
 RET:
 	return;
+}
+
+Type type_resolve(TypeContext const *tc, Type t)
+{
+	while(t.type == TYPE_TYPEDEF) {
+		t = tc->types[t.typdef.backing];
+	}
+
+	return t;
 }

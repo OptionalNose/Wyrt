@@ -53,7 +53,10 @@ typedef enum {
 	TOKEN_STRUCT,
 
 	TOKEN_HASH_EXTERN,
-	TOKEN_DISCARD
+	TOKEN_DISCARD,
+
+	TOKEN_TYPEDEF,
+	TOKEN_ARROW
 } TokenType;
 
 typedef struct {

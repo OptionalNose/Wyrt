@@ -52,6 +52,9 @@ typedef enum {
 
 	AST_EXTERN,
 	AST_DISCARD,
+
+	AST_TYPEDEF,
+	AST_ARROW
 } AstNodeType;
 
 typedef union {
@@ -226,6 +229,20 @@ typedef union {
 		DebugInfo debug_info;
 		size_t value;
 	} discard;
+
+	struct {
+		AstNodeType type;
+		DebugInfo debug_info;
+		size_t parent;
+		size_t member;
+	} arrow;
+
+	struct {
+		AstNodeType type;
+		DebugInfo debug_info;
+		size_t id;
+		size_t backing;
+	} typdef;
 } AstNode;
 
 void parser_gen_ast(

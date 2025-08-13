@@ -64,4 +64,10 @@
 	.file = "helloworld.w",
 	.out = "Hello, World!\n",
 	.exitcode = 0,
-}
+},
+
+{
+	.file = "typedef.w",
+	.out = "Hello, Typedef!\n",
+	.exitcode = 16,
+},

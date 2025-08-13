@@ -269,13 +269,15 @@ static void parse_expr(
 			break;
 
 		case TOKEN_PERIOD:
+		case TOKEN_ARROW:
 			do {} while(0);
 
 			const DebugInfo struct_access_debug = tokens[*index].debug.debug_info;
+			const TokenType access_type = tokens[*index].type;
 
 			size_t *struct_parent = dynarr_pop(&free_terms);
 			if(!struct_parent) {
-				fprintf(stderr, "Expected Term before '.' at ");
+				fprintf(stderr, "Expected Term before struct access at ");
 				lexer_print_debug_to_file(stderr, &struct_access_debug);
 				fprintf(stderr, "\n");
 				*err = ERROR_UNEXPECTED_DATA;
@@ -285,8 +287,9 @@ static void parse_expr(
 			*index += 1;
 
 			if(tokens[*index].type != TOKEN_IDENT) {
-				fprintf(stderr, "Expected Identifier after '.', found ");
+				fprintf(stderr, "Expected Identifier after struct access, found ");
 				lexer_print_token_to_file(stderr, &tokens[*index], identifiers, strings);
+				fprintf(stderr, "\n");
 				*err = ERROR_UNEXPECTED_DATA;
 				goto RET;
 			}
@@ -297,7 +300,7 @@ static void parse_expr(
 				nodes,
 				&(AstNode) {
 					.struct_access = {
-						.type = AST_STRUCT_ACCESS,
+						.type = access_type == TOKEN_PERIOD ? AST_STRUCT_ACCESS : AST_ARROW,
 						.debug_info = struct_access_debug,
 						.parent = *struct_parent,
 						.member_id = member_id
@@ -713,6 +716,11 @@ UNDERSCORE_CLEAN:
 		case TOKEN_COMMA:
 		case TOKEN_RSQUARE:
 		case TOKEN_RCURLY:
+		case TOKEN_ASSIGN:
+		case TOKEN_ADD_ASSIGN:
+		case TOKEN_SUB_ASSIGN:
+		case TOKEN_MUL_ASSIGN:
+		case TOKEN_DIV_ASSIGN:
 			terminated = true;
 			*index -= 2;
 			break;
@@ -769,6 +777,73 @@ static void parse_type(
 	char *const *strings,
 	Error *err
 );
+
+static void parse_assign(
+	const Token *tokens,
+	size_t token_count,
+	size_t *index,
+	DynArr *nodes,
+	char *const *identifiers,
+	char *const *strings,
+	Error *err
+)
+{
+	parse_expr(tokens, token_count, index, nodes, identifiers, strings, err);
+	if(*err) goto RET;
+
+	size_t lhs = nodes->count - 1;
+
+	*index += 1;
+
+	AstNodeType type;
+	switch(tokens[*index].type) {
+	case TOKEN_ASSIGN:
+		type = AST_ASSIGN;
+		break;
+	case TOKEN_ADD_ASSIGN:
+		type = AST_ADD_ASSIGN;
+		break;
+	case TOKEN_SUB_ASSIGN:
+		type = AST_SUB_ASSIGN;
+		break;
+	case TOKEN_MUL_ASSIGN:
+		type = AST_MUL_ASSIGN;
+		break;
+	case TOKEN_DIV_ASSIGN:
+		type = AST_DIV_ASSIGN;
+		break;
+	default:
+		fprintf(stderr, "Expected Assignment, found ");
+		lexer_print_token_to_file(stderr, &tokens[*index], identifiers, strings);
+		*err = ERROR_UNEXPECTED_DATA;
+		goto RET;
+	}
+	DebugInfo debug = tokens[*index].debug.debug_info;
+
+	*index += 1;
+
+	parse_expr(tokens, token_count, index, nodes, identifiers, strings, err);
+	if(*err) goto RET;
+
+	size_t rhs = nodes->count - 1;
+
+	dynarr_push(
+		nodes,
+		&(AstNode) {
+			.assign = {
+				.type = type,
+				.debug_info = debug,
+				.var = lhs,
+				.expr = rhs,
+			},
+		},
+		err
+	);
+	if(*err) goto RET;
+
+RET:
+	return;
+}
 
 static void parse_block(
 	const Token *tokens, size_t token_count, size_t *index,
@@ -884,124 +959,7 @@ static void parse_block(
 			break;
 			
 		case TOKEN_STAR:
-			*index += 1;
-
-			switch(tokens[*index].type) {
-			case TOKEN_IDENT:
-				dynarr_push(
-					nodes,
-					&(AstNode) {
-						.ident = {
-							.type = AST_IDENT,
-							.debug_info = tokens[*index].debug.debug_info,
-							.id = tokens[*index].ident.id,
-						},
-					},
-					err
-				);
-				if(*err) goto RET;
-
-				size_t ident_target = nodes->count - 1;
-
-				dynarr_push(
-					nodes,
-					&(AstNode) {
-						.deref = {
-							.type = AST_DEREF,
-							.debug_info = debug_info,
-							.ptr = ident_target,
-						},
-					},
-					err
-				);
-				if(*err) goto RET;
-				break;
-
-			case TOKEN_LPAREN:
-				*index += 1;
-
-				parse_expr(tokens, token_count, index, nodes, identifiers, strings, err);
-				if(*err) goto RET;
-
-				*index += 1;
-
-				if(tokens[*index].type != TOKEN_RPAREN) {
-					fprintf(stderr, "Expected ')', found ");
-					lexer_print_token_to_file(stderr, &tokens[*index], identifiers, strings);
-					*err = ERROR_UNEXPECTED_DATA;
-					goto RET;
-				}
-
-				size_t paren_target = nodes->count - 1;
-
-				dynarr_push(
-					nodes,
-					&(AstNode) {
-						.deref = {
-							.type = AST_DEREF,
-							.debug_info = debug_info,
-							.ptr = paren_target,
-						},
-					},
-					err
-				);
-				if(*err) goto RET;
-				break;
-
-			default:
-				fprintf(stderr, "Invalid Target for Dereference: ");
-				lexer_print_token_to_file(stderr, &tokens[*index], identifiers, strings);
-				*err = ERROR_UNEXPECTED_DATA;
-				goto RET;
-			}
-
-			size_t lhs = nodes->count - 1;
-			*index += 1;
-
-			AstNodeType type;
-			switch(tokens[*index].type) {
-			case TOKEN_ASSIGN:
-				type = AST_ASSIGN;
-				break;
-			case TOKEN_ADD_ASSIGN:
-				type = AST_ADD_ASSIGN;
-				break;
-			case TOKEN_SUB_ASSIGN:
-				type = AST_SUB_ASSIGN;
-				break;
-			case TOKEN_MUL_ASSIGN:
-				type = AST_MUL_ASSIGN;
-				break;
-			case TOKEN_DIV_ASSIGN:
-				type = AST_DIV_ASSIGN;
-				break;
-			default:
-				fprintf(stderr, "Expected Assignment, found ");
-				lexer_print_token_to_file(stderr, &tokens[*index], identifiers, strings);
-				*err = ERROR_UNEXPECTED_DATA;
-				goto RET;
-			}
-
-			DebugInfo assign_debug = tokens[*index].debug.debug_info;
-
-			*index += 1;
-			parse_expr(tokens, token_count, index, nodes, identifiers, strings, err);
-			if(*err) goto RET;
-
-			size_t expr = nodes->count - 1;
-
-			dynarr_push(
-				nodes,
-				&(AstNode) {
-					.assign = {
-						.type = type,
-						.debug_info = assign_debug,
-						.var = lhs,
-						.expr = expr,
-					},
-				},
-				err
-			);
+			parse_assign(tokens, token_count, index, nodes, identifiers, strings, err);
 			if(*err) goto RET;
 			break;
 
@@ -1012,86 +970,10 @@ static void parse_block(
 				if(*err) goto RET;
 				break;
 
-			case TOKEN_ASSIGN:
-			case TOKEN_ADD_ASSIGN:
-			case TOKEN_SUB_ASSIGN:
-			case TOKEN_MUL_ASSIGN:
-			case TOKEN_DIV_ASSIGN:
-				do {} while(0);
-
-				AstNodeType type;
-				switch(tokens[*index + 1].type) {
-				default: //silence compiler warnings
-				case TOKEN_ASSIGN:
-					type = AST_ASSIGN;
-					break;
-				case TOKEN_ADD_ASSIGN:
-					type = AST_ADD_ASSIGN;
-					break;
-				case TOKEN_SUB_ASSIGN:
-					type = AST_SUB_ASSIGN;
-					break;
-				case TOKEN_MUL_ASSIGN:
-					type = AST_MUL_ASSIGN;
-					break;
-				case TOKEN_DIV_ASSIGN:
-					type = AST_DIV_ASSIGN;
-					break;
-				}
-
-				dynarr_push(
-					nodes,
-					&(AstNode) {
-						.ident = {
-							.type = AST_IDENT,
-							.debug_info = tokens[*index].debug.debug_info,
-							.id = tokens[*index].ident.id,
-						},
-					},
-					err
-				);
-				if(*err) goto RET;
-
-				*index += 2;
-
-				size_t var = nodes->count - 1;
-
-				parse_expr(tokens, token_count, index, nodes, identifiers, strings, err);
-				if(*err) goto RET;
-
-				size_t expr = nodes->count - 1;
-
-				dynarr_push(
-					nodes,
-					&(AstNode) {
-						.assign = {
-							.type = type,
-							.debug_info = debug,
-							.var = var,
-							.expr = expr,
-						},
-					},
-					err
-				);
+			default:
+				parse_assign(tokens, token_count, index, nodes, identifiers, strings, err);
 				if(*err) goto RET;
 				break;
-
-
-			case TOKEN_PLUS:
-			case TOKEN_MINUS:
-			case TOKEN_FSLASH:
-				fprintf(stderr, "Expected Statement, found Expression ");
-				lexer_print_token_to_file(stderr, &tokens[*index + 1], identifiers, strings);
-				fprintf(stderr, "\n");
-				*err = ERROR_UNEXPECTED_DATA;
-				goto RET;
-
-			default:
-				fprintf(stderr, "Unexpected ");
-				lexer_print_token_to_file(stderr, &tokens[*index + 1], identifiers, strings);
-				fprintf(stderr, "\n");
-				*err = ERROR_UNEXPECTED_DATA;
-				goto RET;
 			}
 			break;
 
@@ -1670,15 +1552,73 @@ void parser_gen_ast(
 				err
 			);
 			if(*err) goto RET;
+			break;
 
-			dynarr_push(
-				&module_statements,
-				&(size_t) { node_list.count - 1 },
+		case TOKEN_TYPEDEF:
+			index += 1;
+			if(tokens[index].type != TOKEN_IDENT) {
+				fprintf(stderr, "Error: Expected Identifier after 'typedef', found ");
+				lexer_print_token_to_file(
+					stderr, &tokens[index], identifiers, strings
+				);
+				fprintf(stderr, "\n");
+				*err = ERROR_UNEXPECTED_DATA;
+				goto RET;
+			}
+			const size_t typedef_id = tokens[index].ident.id;
+
+			index += 1;
+
+			if(tokens[index].type != TOKEN_ASSIGN) {
+				fprintf(stderr, "Error: Expected '=' in typedef, found ");
+				lexer_print_token_to_file(
+					stderr, &tokens[index], identifiers, strings
+				);
+				fprintf(stderr, "\n");
+				*err = ERROR_UNEXPECTED_DATA;
+				goto RET;
+			}
+
+			index += 1;
+
+			parse_type(
+				tokens, token_count, &index,
+				&node_list,
+				identifiers,
+				strings,
 				err
 			);
 			if(*err) goto RET;
 
+			const size_t backing_type = node_list.count - 1;
+
+			index += 1;
+			
+			if(tokens[index].type != TOKEN_SEMICOLON) {
+				fprintf(stderr, "Error: Expected ';' to end typedef, found ");
+				lexer_print_token_to_file(
+					stderr, &tokens[index], identifiers, strings
+				);
+				fprintf(stderr, "\n");
+				*err = ERROR_UNEXPECTED_DATA;
+				goto RET;
+			}
+
+			dynarr_push(
+				&node_list,
+				&(AstNode) {
+					.typdef = {
+						.type = AST_TYPEDEF,
+						.debug_info = debug_info,
+						.id = typedef_id,
+						.backing = backing_type
+					},
+				},
+				err
+			);
+			if(*err) goto RET;
 			break;
+
 		default:
 			fprintf(stderr, "Error: Expected Declaration, found ");
 			lexer_print_token_to_file(
@@ -1690,6 +1630,13 @@ void parser_gen_ast(
 		}
 
 		index += 1;
+
+		dynarr_push(
+			&module_statements,
+			&(size_t) { node_list.count - 1 },
+			err
+		);
+		if(*err) goto RET;
 	}
 
 RET:
@@ -1771,6 +1718,8 @@ void parser_clean_ast(AstNode *nodes, size_t node_count)
 		case AST_ZSTRING_LIT:
 		case AST_CSTRING_LIT:
 		case AST_DISCARD:
+		case AST_ARROW:
+		case AST_TYPEDEF:
 			break;
 		}
 	}
@@ -1966,7 +1915,7 @@ void parser_print_ast_to_file(
 			for(size_t j = 0; j < nodes[i].struct_lit.member_count; j++) {
 				fprintf(
 					file,
-					".%s = %zi",
+					".%s = %zi, ",
 					identifiers[nodes[i].struct_lit.member_name_ids[j]],
 					nodes[i].struct_lit.member_values[j]
 				);
@@ -1977,9 +1926,9 @@ void parser_print_ast_to_file(
 		case AST_STRUCT_ACCESS:
 			fprintf(
 				file,
-				"%zi.%zi",
+				"%zi.%s",
 				nodes[i].struct_access.parent,
-				nodes[i].struct_access.member_id
+				identifiers[nodes[i].struct_access.member_id]
 			);
 			break;
 
@@ -2016,6 +1965,22 @@ void parser_print_ast_to_file(
 				file,
 				"discard %zi",
 				nodes[i].discard.value
+			);
+			break;
+		case AST_ARROW:
+			fprintf(
+				file,
+				"%zi -> %zi",
+				nodes[i].arrow.parent,
+				nodes[i].arrow.member
+			);
+			break;
+		case AST_TYPEDEF:
+			fprintf(
+				file,
+				"typedef \"%s\" = %zi",
+				identifiers[nodes[i].typdef.id],
+				nodes[i].typdef.backing
 			);
 			break;
 		}

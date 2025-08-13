@@ -103,6 +103,10 @@ static void print_type(
 			}
 		}
 		break;
+	case TYPE_TYPEDEF:
+		print_type(file, tc, tc->types[t.typdef.backing], err);
+		if(*err) goto RET;
+		break;
 	}
 
 RET:
@@ -120,7 +124,7 @@ static Var *find_var(const Scope *scope, size_t	id)
 	return NULL;
 }
 
-Type type_of_expr(
+static Type type_of_expr(
 	CodeGen const *cg,
 	Scope *scope,
 	size_t i,
@@ -183,10 +187,10 @@ Type type_of_expr(
 		);
 		if(*err) goto RET;
 
-		if(types_are_compatible(lhs, rhs)) {
+		if(types_are_compatible(&scope->tc, lhs, rhs)) {
 			type = rhs;
 			break;
-		} else if(types_are_compatible(rhs, lhs)) {
+		} else if(types_are_compatible(&scope->tc, rhs, lhs)) {
 			type = lhs;
 			break;
 		} else {
@@ -336,7 +340,8 @@ Type type_of_expr(
 				parent = cg->nodes[parent.subscript.arr];
 			} break;
 
-			case AST_STRUCT_ACCESS: {
+			case AST_STRUCT_ACCESS:
+			case AST_ARROW: {
 				parent = cg->nodes[parent.struct_access.parent];
 			} break;
 
@@ -456,6 +461,58 @@ Type type_of_expr(
 		}
 	} break;
 
+	case AST_ARROW: {
+		Type parent = type_of_expr(
+			cg,
+			scope,
+			expr.struct_access.parent,
+			err
+		);
+		if(*err) goto RET;
+
+		if(parent.type != TYPE_POINTER_CONST
+			&& parent.type != TYPE_POINTER_ABYSS
+			&& parent.type != TYPE_POINTER_VAR
+		) {
+			fprintf(stderr, "Cannot Use Arrow Operator on non-Pointer Type at ");
+			lexer_print_debug_to_file(stderr, &expr.debug.debug_info);
+			fprintf(stderr, "\n");
+			*err = ERROR_UNEXPECTED_DATA;
+			goto RET;
+		}
+
+		const Type target = type_resolve(&scope->tc, scope->tc.types[parent.pointer.base]);
+
+		if(target.type != TYPE_STRUCT) {
+			fprintf(stderr, "Cannot Access Member of non-struct Type at ");
+			lexer_print_debug_to_file(stderr, &expr.debug.debug_info);
+			fprintf(stderr, "\n");
+			*err = ERROR_UNEXPECTED_DATA;
+			goto RET;
+		}
+
+		type.type = TYPE_NONE;
+		for(size_t i = 0; i < target.struct_type.member_count; i++) {
+			if(expr.struct_access.member_id
+			   == target.struct_type.member_name_ids[i]
+			) {
+				type = scope->tc.types[target.struct_type.member_types[i]];
+				break;
+			}
+		}
+		if(!type.type) {
+			fprintf(
+				stderr,
+				"No Member '%s' in struct at ",
+				cg->identifiers[expr.struct_access.member_id]
+			);
+			lexer_print_debug_to_file(stderr, &expr.debug.debug_info);
+			fprintf(stderr, "\n");
+			*err = ERROR_UNEXPECTED_DATA;
+			goto RET;
+		}
+	} break;
+
 	case AST_STRING_LIT:
 	case AST_ZSTRING_LIT:
 		type = (Type) {.slice = {.type = TYPE_SLICE_CONST, .base = 0}};
@@ -474,6 +531,7 @@ Type type_of_expr(
 
 RET:
 	types_register_nexist(&scope->tc, type, err);
+	type = type_resolve(&scope->tc, type);
 	return type;
 }
 
@@ -533,9 +591,9 @@ static void	gen_fn_call(
 
 	if(expected.type && !types_are_equal(expected, sig.ret))	{
 		fprintf(stderr,	"Function Returns '");
-		type_print(stderr, &scope->tc, sig.ret);
+		type_print(stderr, &scope->tc, sig.ret, cg->identifiers);
 		fprintf(stderr,	"',	Expected '");
-		type_print(stderr, &scope->tc, expected);
+		type_print(stderr, &scope->tc, expected, cg->identifiers);
 		fprintf(stderr,	" at ");
 		lexer_print_debug_to_file(stderr, &call->debug.debug_info);
 		fprintf(stderr,	"\n");
@@ -613,7 +671,7 @@ RET:
 	return;
 }
 
-static void	gen_assign(
+static void gen_assign(
 	CodeGen	*cg,
 	const AstNode *assign,
 	size_t *temp_counter,
@@ -707,7 +765,7 @@ static void	gen_assign(
 				goto RET;
 			}
 			fprintf(stderr, "Cannot Dereference non-Pointer Type '");
-			type_print(stderr, &scope->tc, ptr_type);
+			type_print(stderr, &scope->tc, ptr_type, cg->identifiers);
 			fprintf(stderr, "' at ");
 			lexer_print_debug_to_file(stderr, &assign->debug.debug_info);
 			fprintf(stderr, "\n");
@@ -1013,6 +1071,16 @@ static void	gen_assign(
 		);
 		if(*err) goto RET;
 
+		gen_expr(
+			cg,
+			parent,
+			parent_type,
+			temp_counter,
+			scope,
+			err		
+		);
+		if(*err) goto RET;
+
 		const size_t struct_location = *temp_counter - 1;
 
 		if(parent_type.type	!= TYPE_STRUCT)	{
@@ -1026,7 +1094,7 @@ static void	gen_assign(
 		size_t struct_member_index = SIZE_MAX;
 		for(size_t i = 0; i	< parent_type.struct_type.member_count;	i++) {
 			if(parent_type.struct_type.member_name_ids[i]
-				== parent->struct_access.member_id
+				== lhs.struct_access.member_id
 			) {
 				struct_member_index	= i;
 				break;
@@ -1052,14 +1120,128 @@ static void	gen_assign(
 		*temp_counter += 1;
 		FPRINTF_OR_ERR(
 			cg->output,
-			"%%%zi = getelementptr inbounds	",
+			"%%%zi = getelementptr inbounds ",
 			member_location
 		);
-		print_type(cg->output, &scope->tc, member_type,	err);
+		print_type(cg->output, &scope->tc, parent_type, err);
 		if(*err) goto RET;
 		FPRINTF_OR_ERR(
 			cg->output,
 			", ptr %%%zi, i32 %zi\n",
+			struct_location,
+			struct_member_index
+		);
+
+		gen_expr(
+			cg,
+			&expr,
+			member_type,
+			temp_counter,
+			scope,
+			err
+		);
+		if(*err) goto RET;
+
+		FPUTS_OR_ERR(cg->output, "store ");
+		print_type(cg->output, &scope->tc, member_type,	err);
+		if(*err) goto RET;
+		FPRINTF_OR_ERR(
+			cg->output,
+			"%%%zi,	ptr	%%%zi\n",
+			*temp_counter -	1,
+			member_location
+		);
+	} break;
+
+	case AST_ARROW: {
+		const AstNode *parent =	&cg->nodes[lhs.struct_access.parent];
+
+		const Type parent_type = type_of_expr(
+			cg,
+			scope,
+			lhs.struct_access.parent,
+			err
+		);
+		if(*err) goto RET;
+
+		gen_expr(
+			cg,
+			parent,
+			parent_type,
+			temp_counter,
+			scope,
+			err		
+		);
+		if(*err) goto RET;
+
+		const size_t struct_location = *temp_counter - 1;
+		if(parent_type.type != TYPE_POINTER_ABYSS
+			&& parent_type.type != TYPE_POINTER_VAR
+		) {
+			if(parent_type.type == TYPE_POINTER_CONST) {
+				fprintf(stderr, "Cannot Assign to const Pointer at ");
+				lexer_print_debug_to_file(stderr, &parent->debug.debug_info);
+				fprintf(stderr, "\n");
+				*err = ERROR_UNEXPECTED_DATA;
+				goto RET;
+			}
+			fprintf(stderr, "Expected Pointer Type at ");
+			lexer_print_debug_to_file(stderr, &parent->debug.debug_info);
+			fprintf(stderr, "\n");
+			*err = ERROR_UNEXPECTED_DATA;
+			goto RET;
+		}
+
+		const Type target_type = type_resolve(
+			&scope->tc,
+			scope->tc.types[parent_type.pointer.base]
+		);
+
+		if(target_type.type != TYPE_STRUCT) {
+			fprintf(stderr,	"Expected struct Type at ");
+			lexer_print_debug_to_file(stderr, &parent->debug.debug_info);
+			fprintf(stderr,	"\n");
+			*err = ERROR_UNEXPECTED_DATA;
+			goto RET;
+		}
+
+		size_t struct_member_index = SIZE_MAX;
+		for(size_t i = 0; i	< target_type.struct_type.member_count; i++) {
+			if(target_type.struct_type.member_name_ids[i]
+				== lhs.struct_access.member_id
+			) {
+				struct_member_index	= i;
+				break;
+			}
+		}
+		if(struct_member_index == SIZE_MAX)	{
+			fprintf(
+				stderr,
+				"No	Member '%s'	in struct Type at ",
+				cg->identifiers[parent->struct_access.member_id]
+			);
+			lexer_print_debug_to_file(stderr, &parent->debug.debug_info);
+			fprintf(stderr,	"\n");
+			*err = ERROR_UNEXPECTED_DATA;
+			goto RET;
+		}
+
+		const Type member_type = scope->tc.types[
+			target_type.struct_type.member_types[struct_member_index]
+		];
+
+		const size_t member_location = *temp_counter;
+		*temp_counter += 1;
+		FPRINTF_OR_ERR(
+			cg->output,
+			"%%%zi = getelementptr inbounds ",
+			member_location
+		);
+		print_type(cg->output, &scope->tc, target_type, err);
+		if(*err) goto RET;
+		FPRINTF_OR_ERR(
+			cg->output,
+			", ptr %%%zi, i32 0, i32 %zi\n",
 			struct_location,
 			struct_member_index
 		);
@@ -1110,11 +1292,11 @@ static void	gen_extend_integer(
 {
 	if(types_are_equal(current,	needed)) return;
 
-	if(!types_are_compatible(current, needed)) {
+	if(!types_are_compatible(&scope->tc, current, needed)) {
 		fprintf(stderr,	"Operand Type '");
-		type_print(stderr, &scope->tc, current);
+		type_print(stderr, &scope->tc, current, cg->identifiers);
 		fprintf(stderr,	"' is Incompatible with	Result Type	'");
-		type_print(stderr, &scope->tc, needed);
+		type_print(stderr, &scope->tc, needed, cg->identifiers);
 		fprintf(stderr,	"' at ");
 		lexer_print_debug_to_file(stderr, debug);
 		fprintf(stderr,	"\n");
@@ -1161,9 +1343,9 @@ static void	gen_extend_integer(
 
 	default:
 		fprintf(stderr,	"Unable	to Extend Type '");
-		type_print(stderr, &scope->tc, current);
+		type_print(stderr, &scope->tc, current, cg->identifiers);
 		fprintf(stderr,	"' to Type '");
-		type_print(stderr, &scope->tc, needed);
+		type_print(stderr, &scope->tc, needed, cg->identifiers);
 		fprintf(stderr,	"' at ");
 		lexer_print_debug_to_file(stderr, debug);
 		*err = ERROR_UNEXPECTED_DATA;
@@ -1215,18 +1397,18 @@ static void gen_deref(
 		fprintf(stderr,	"Expected Pointer Type at ");
 		lexer_print_debug_to_file(stderr, &expr->debug.debug_info);
 		fprintf(stderr,	", found Type '");
-		type_print(stderr, &scope->tc, ptr_type);
+		type_print(stderr, &scope->tc, ptr_type, cg->identifiers);
 		fprintf(stderr,	"' instead.\n");
 		*err = ERROR_UNEXPECTED_DATA;
 		goto RET;
 	}
 
 	if(expected.type) {
-		if(!types_are_compatible(ptr_type, expected))	{
+		if(!types_are_compatible(&scope->tc, ptr_type, expected))	{
 			fprintf(stderr,	"Cannot Cast Value of Type '");
-			type_print(stderr, &scope->tc, ptr_type);
+			type_print(stderr, &scope->tc, ptr_type, cg->identifiers);
 			fprintf(stderr,	"' to Type '");
-			type_print(stderr, &scope->tc, expected);
+			type_print(stderr, &scope->tc, expected, cg->identifiers);
 			fprintf(stderr,	"' at ");
 			lexer_print_debug_to_file(stderr, &expr->debug.debug_info);
 			fprintf(stderr,	"\n");
@@ -1260,6 +1442,10 @@ static void gen_expr(
 	Error *err
 )
 {
+	while(expected.type == TYPE_TYPEDEF) {
+		expected = scope->tc.types[expected.typdef.backing];
+	}
+
 	switch(expr->type) {
 	case AST_IDENT:
 		do {} while(0);
@@ -1275,11 +1461,11 @@ static void gen_expr(
 			*err = ERROR_UNEXPECTED_DATA;
 			goto RET;
 		}
-		if(expected.type &&	!types_are_compatible(var->type, expected))	{
+		if(expected.type &&	!types_are_compatible(&scope->tc, var->type, expected)) {
 			fprintf(stderr,	"Expected Type '");
-			type_print(stderr, &scope->tc, expected);
+			type_print(stderr, &scope->tc, expected, cg->identifiers);
 			fprintf(stderr,	"',	found Type '");
-			type_print(stderr, &scope->tc, var->type);
+			type_print(stderr, &scope->tc, var->type, cg->identifiers);
 			fprintf(stderr,	"' at ");
 			lexer_print_debug_to_file(stderr, &expr->debug.debug_info);
 			fprintf(stderr,	"\n");
@@ -1430,9 +1616,9 @@ static void gen_expr(
 		if(expected.type) {
 			needed = expected;
 		} else {
-			if(types_are_compatible(lhs_type, rhs_type)) {
+			if(types_are_compatible(&scope->tc, lhs_type, rhs_type)) {
 				needed = rhs_type;
-			} else if(types_are_compatible(rhs_type, lhs_type))	{
+			} else if(types_are_compatible(&scope->tc, rhs_type, lhs_type))	{
 				needed = lhs_type;
 			} else {
 				fprintf(
@@ -1440,9 +1626,9 @@ static void gen_expr(
 					"Attempting	to Perform Arithmetic on "
 					"Non-Compatible	Types '"
 				);
-				type_print(stderr, &scope->tc, lhs_type);
+				type_print(stderr, &scope->tc, lhs_type, cg->identifiers);
 				fprintf(stderr,	"' and '");
-				type_print(stderr, &scope->tc, rhs_type);
+				type_print(stderr, &scope->tc, rhs_type, cg->identifiers);
 				fprintf(stderr,	"' at ");
 				lexer_print_debug_to_file(
 					stderr,
@@ -1543,7 +1729,7 @@ static void gen_expr(
 			fprintf(stderr,	"Expected Pointer Type at ");
 			lexer_print_debug_to_file(stderr, &expr->debug.debug_info);
 			fprintf(stderr,	", found Type '");
-			type_print(stderr, &scope->tc, ptr_type);
+			type_print(stderr, &scope->tc, ptr_type, cg->identifiers);
 			fprintf(stderr,	"' instead.\n");
 			*err = ERROR_UNEXPECTED_DATA;
 			goto RET;
@@ -1552,11 +1738,11 @@ static void gen_expr(
 		Type base = scope->tc.types[ptr_type.pointer.base];
 
 		if(expected.type) {
-			if(!types_are_compatible(base, expected)) {
+			if(!types_are_compatible(&scope->tc, base, expected)) {
 				fprintf(stderr,	"Cannot	Cast Value of Type '");
-				type_print(stderr, &scope->tc, ptr_type);
+				type_print(stderr, &scope->tc, ptr_type, cg->identifiers);
 				fprintf(stderr,	"' to Type '");
-				type_print(stderr, &scope->tc, expected);
+				type_print(stderr, &scope->tc, expected, cg->identifiers);
 				fprintf(stderr,	"' at ");
 				lexer_print_debug_to_file(stderr, &expr->debug.debug_info);
 				fprintf(stderr,	"\n");
@@ -1642,11 +1828,11 @@ static void gen_expr(
 			};
 
 			if(expected.type) {
-				if(!types_are_compatible(ptr_type, expected)){
+				if(!types_are_compatible(&scope->tc, ptr_type, expected)){
 					fprintf(stderr,	"Cannot Coerce Pointer of Type '");
-					type_print(stderr, &scope->tc, ptr_type);
+					type_print(stderr, &scope->tc, ptr_type, cg->identifiers);
 					fprintf(stderr,	"' to Type '");
-					type_print(stderr, &scope->tc, expected);
+					type_print(stderr, &scope->tc, expected, cg->identifiers);
 					fprintf(stderr,	"' at ");
 					lexer_print_debug_to_file(stderr, &expr->debug.debug_info);
 					fprintf(stderr, "\n");
@@ -1741,7 +1927,7 @@ static void gen_expr(
 
 			default:
 				fprintf(stderr, "Cannot Subscript non-array Type '");
-				type_print(stderr, &scope->tc, arr_type);
+				type_print(stderr, &scope->tc, arr_type, cg->identifiers);
 				fprintf(stderr, "' at ");
 				lexer_print_debug_to_file(stderr, &expr->debug.debug_info);
 				fprintf(stderr, "\n");
@@ -1909,11 +2095,11 @@ static void gen_expr(
 			};
 
 			if(expected.type) {
-				if(!types_are_compatible(ptr_type, expected)){
+				if(!types_are_compatible(&scope->tc, ptr_type, expected)){
 					fprintf(stderr,	"Cannot	Coerce Pointer of Type '");
-					type_print(stderr, &scope->tc, ptr_type);
+					type_print(stderr, &scope->tc, ptr_type, cg->identifiers);
 					fprintf(stderr,	"' to Type '");
-					type_print(stderr, &scope->tc, expected);
+					type_print(stderr, &scope->tc, expected, cg->identifiers);
 					fprintf(stderr,	"' at ");
 					lexer_print_debug_to_file(stderr, &expr->debug.debug_info);
 					*err = ERROR_UNEXPECTED_DATA;
@@ -1922,7 +2108,8 @@ static void gen_expr(
 			}
 		} break;
 
-		case AST_STRUCT_ACCESS: {
+		case AST_STRUCT_ACCESS:
+		case AST_ARROW: {
 			Type struct_type = type_of_expr(
 				cg,
 				scope,
@@ -1930,6 +2117,28 @@ static void gen_expr(
 				err
 			);
 			if(*err) goto RET;
+
+			if(expr->type == AST_ARROW) {
+				if(struct_type.type != TYPE_POINTER_CONST
+					&& struct_type.type != TYPE_POINTER_ABYSS
+					&& struct_type.type != TYPE_POINTER_VAR
+				) {
+					fprintf(stderr, "Expected struct Type at ");
+					lexer_print_debug_to_file(stderr, &expr->debug.debug_info);
+					fprintf(stderr, "\n");
+					*err = ERROR_UNEXPECTED_DATA;
+					goto RET;
+				}
+				struct_type = type_resolve(&scope->tc, scope->tc.types[struct_type.pointer.base]);
+			} else {
+				if(struct_type.type != TYPE_STRUCT) {
+					fprintf(stderr, "Expected struct Type at ");
+					lexer_print_debug_to_file(stderr, &expr->debug.debug_info);
+					fprintf(stderr, "\n");
+					*err = ERROR_UNEXPECTED_DATA;
+					goto RET;
+				}
+			}
 
 			gen_expr(
 				cg,
@@ -1972,12 +2181,21 @@ static void gen_expr(
 			);
 			*temp_counter += 1;
 			print_type(cg->output, &scope->tc, struct_type, err);
-			FPRINTF_OR_ERR(
-				cg->output,
-				", ptr %%%zi, i32 %zi\n",
-				struct_ssa,
-				struct_member_index
-			);
+			if(expr->type == AST_ARROW) {
+				FPRINTF_OR_ERR(
+					cg->output,
+					", ptr %%%zi, i32 0, i32 %zi\n",
+					struct_ssa,
+					struct_member_index
+				);
+			} else {
+				FPRINTF_OR_ERR(
+					cg->output,
+					", ptr %%%zi, i32 %zi\n",
+					struct_ssa,
+					struct_member_index
+				);
+			}
 
 			bool seeking = true;
 			TypeType ptr_access;
@@ -2107,11 +2325,11 @@ static void gen_expr(
 			};
 
 			if(expected.type) {
-				if(!types_are_compatible(ptr_type, expected)){
+				if(!types_are_compatible(&scope->tc, ptr_type, expected)){
 					fprintf(stderr,	"Cannot	Coerce Pointer of Type '");
-					type_print(stderr, &scope->tc, ptr_type);
+					type_print(stderr, &scope->tc, ptr_type, cg->identifiers);
 					fprintf(stderr,	"' to Type '");
-					type_print(stderr, &scope->tc, expected);
+					type_print(stderr, &scope->tc, expected, cg->identifiers);
 					fprintf(stderr,	"' at ");
 					lexer_print_debug_to_file(stderr, &expr->debug.debug_info);
 					*err = ERROR_UNEXPECTED_DATA;
@@ -2459,7 +2677,7 @@ static void gen_expr(
 				"No Member '%s' in Type '",
 				cg->identifiers[expr->struct_access.member_id]
 			);
-			type_print(stderr, &scope->tc, parent_type);
+			type_print(stderr, &scope->tc, parent_type, cg->identifiers);
 			fprintf(stderr, "' at ");
 			lexer_print_debug_to_file(stderr, &expr->debug.debug_info);
 			fprintf(stderr, "\n");
@@ -2475,6 +2693,96 @@ static void gen_expr(
 			cg->output,
 			" %%%zi, %zi\n",
 			parent_ssa,
+			elem_index
+		);
+	} break;
+	
+	case AST_ARROW: {
+		Type parent_type = type_of_expr(
+			cg,
+			scope,
+			expr->struct_access.parent,
+			err
+		);
+		if(*err) goto RET;
+
+		if(parent_type.type != TYPE_POINTER_CONST
+			&& parent_type.type != TYPE_POINTER_ABYSS
+			&& parent_type.type != TYPE_POINTER_VAR
+		) {
+			fprintf(stderr, "Cannot Use Arrow Operator on non-Pointer Type at ");
+			lexer_print_debug_to_file(stderr, &expr->debug.debug_info);
+			fprintf(stderr, "\n");
+			*err = ERROR_UNEXPECTED_DATA;
+			goto RET;
+		}
+
+		const Type target_type = type_resolve(
+			&scope->tc,
+			scope->tc.types[parent_type.pointer.base]
+		);
+
+		if(target_type.type != TYPE_STRUCT) {
+			fprintf(
+				stderr,
+				"No Member '%s' in non-struct Type at ",
+				cg->identifiers[expr->struct_access.member_id]
+			);
+			lexer_print_debug_to_file(stderr, &expr->debug.debug_info);
+			fprintf(stderr, "\n");
+			*err = ERROR_UNEXPECTED_DATA;
+			goto RET;
+		}
+
+		gen_expr(
+			cg,
+			&cg->nodes[expr->struct_access.parent],
+			parent_type,
+			temp_counter,
+			scope,
+			err
+		);
+		if(*err) goto RET;
+
+		size_t parent_ssa = *temp_counter - 1;
+
+		size_t elem_index = SIZE_MAX;
+		for(size_t i = 0; i < target_type.struct_type.member_count; i++) {
+			if(target_type.struct_type.member_name_ids[i]
+				== expr->struct_access.member_id
+			) {
+				elem_index = i;
+				break;
+			}
+		}
+
+		if(elem_index == SIZE_MAX) {
+			fprintf(
+				stderr,
+				"No Member '%s' in Type '",
+				cg->identifiers[expr->struct_access.member_id]
+			);
+			type_print(stderr, &scope->tc, parent_type, cg->identifiers);
+			fprintf(stderr, "' at ");
+			lexer_print_debug_to_file(stderr, &expr->debug.debug_info);
+			fprintf(stderr, "\n");
+			*err = ERROR_UNEXPECTED_DATA;
+			goto RET;
+		}
+
+		FPRINTF_OR_ERR(cg->output, "%%%zi = load ", *temp_counter);
+		*temp_counter += 1;
+		print_type(cg->output, &scope->tc, target_type, err);
+		FPRINTF_OR_ERR(cg->output, ", ptr %%%zi\n", parent_ssa);
+
+		FPRINTF_OR_ERR(cg->output, "%%%zi = extractvalue ", *temp_counter);
+		*temp_counter += 1;
+		print_type(cg->output, &scope->tc, target_type, err);
+		if(*err) goto RET;
+		FPRINTF_OR_ERR(
+			cg->output,
+			" %%%zi, %zi\n",
+			*temp_counter - 2,
 			elem_index
 		);
 	} break;
@@ -2930,6 +3238,75 @@ RET:
 	return;
 }
 
+static void gen_fnsig(CodeGen *cg, Scope *global_scope, size_t index, FnSig *sig, Error *err)
+{
+	const AstNode *type	= &cg->nodes[
+		cg->nodes[index].fn_def.fn_type
+	];
+
+	assert(type->type == AST_FN_TYPE);
+
+	Type *args = malloc(type->fn_type.arg_count	* sizeof*args);
+	CHECK_MALLOC(args);
+	size_t *arg_ids = malloc(type->fn_type.arg_count * sizeof*arg_ids);
+	if(!arg_ids) {
+		fprintf(stderr, "OOM!\n");
+		free(args);
+		*err = ERROR_OUT_OF_MEMORY;
+		goto RET;
+	}
+
+	for(size_t j = 0; j	< type->fn_type.arg_count; j++)	{
+		args[j]	= type_from_ast(
+			&global_scope->tc,
+			cg->nodes,
+			type->fn_type.args[2*j+1],
+			err
+		);
+		if(*err) {
+			free(args);
+			free(arg_ids);
+			goto RET;
+		}
+
+		AstNode ident = cg->nodes[type->fn_type.args[2*j]];
+		assert(ident.type == AST_IDENT);
+		arg_ids[j] = ident.ident.id;
+	}
+
+	Type ret = type_from_ast(
+		&global_scope->tc,
+		cg->nodes,
+		type->fn_type.ret_type,
+		err
+	);
+
+	if(*err) {
+		free(args);
+		free(arg_ids);
+		goto RET;
+	}
+
+	size_t id = cg->nodes[cg->nodes[index].fn_def.ident].ident.id;
+	size_t linkage_name = SIZE_MAX;
+	if(cg->nodes[cg->nodes[index].fn_def.block].type == AST_EXTERN) {
+		const AstNode name = cg->nodes[cg->nodes[index].fn_def.block];
+		linkage_name = cg->nodes[name.extrn.name].string_lit.id;
+	}
+
+	*sig = (FnSig) {
+		.id = id,
+		.linkage_name = linkage_name,
+		.ret = ret,
+		.arg_count = type->fn_type.arg_count,
+		.args =	args,
+		.arg_ids = arg_ids,
+	};
+
+RET:
+	return;
+}
+
 void codegen_gen(CodeGen *cg, Error	*err)
 {
 	Scope global_scope;
@@ -2994,74 +3371,51 @@ void codegen_gen(CodeGen *cg, Error	*err)
 
 	for(size_t i = 0; i	< statement_count; i++)	{
 		const size_t index = statements[i];
-		if(cg->nodes[index].type ==	AST_FN_DEF)	{
-			const AstNode *type	= &cg->nodes[
-				cg->nodes[index].fn_def.fn_type
-			];
-
-			assert(type->type == AST_FN_TYPE);
-
-			Type *args = malloc(type->fn_type.arg_count	* sizeof*args);
-			CHECK_MALLOC(args);
-			size_t *arg_ids = malloc(type->fn_type.arg_count * sizeof*arg_ids);
-			CHECK_MALLOC(arg_ids);
-
-			for(size_t j = 0; j	< type->fn_type.arg_count; j++)	{
-				args[j]	= type_from_ast(
-					&global_scope.tc,
-					cg->nodes,
-					type->fn_type.args[2*j+1],
-					err
-				);
-				if(*err) {
-					free(args);
-					free(arg_ids);
-					goto RET;
-				}
-
-				AstNode ident = cg->nodes[type->fn_type.args[2*j]];
-				assert(ident.type == AST_IDENT);
-				arg_ids[j] = ident.ident.id;
-			}
-
-			Type ret = type_from_ast(
-				&global_scope.tc,
-				cg->nodes,
-				type->fn_type.ret_type,
-				err
-			);
-
+		switch(cg->nodes[index].type) {
+		case AST_FN_DEF:
+			dynarr_alloc(&fn_sigs, 1, err);
 			if(*err) {
-				free(args);
-				free(arg_ids);
+				FnSig *sigs = fn_sigs.data;
+				for(size_t i = 0; i < fn_sigs.count - 1; i++) {
+					if(sigs[i].args) free(sigs[i].args);
+					if(sigs[i].arg_ids) free(sigs[i].arg_ids);
+				}
+				free(sigs);
 				goto RET;
 			}
-
-			size_t id = cg->nodes[cg->nodes[index].fn_def.ident].ident.id;
-			size_t linkage_name = SIZE_MAX;
-		   	if(cg->nodes[cg->nodes[index].fn_def.block].type == AST_EXTERN) {
-				const AstNode name = cg->nodes[cg->nodes[index].fn_def.block];
-				linkage_name = cg->nodes[name.extrn.name].string_lit.id;
+			gen_fnsig(cg, &global_scope, index, dynarr_from_back(&fn_sigs, 0), err);
+			if(*err) {
+				FnSig *sigs = fn_sigs.data;
+				for(size_t i = 0; i < fn_sigs.count - 1; i++) {
+					if(sigs[i].args) free(sigs[i].args);
+					if(sigs[i].arg_ids) free(sigs[i].arg_ids);
+				}
+				free(sigs);
+				goto RET;
 			}
+			break;
 
-			dynarr_push(
-				&fn_sigs,
-				&(FnSig) {
-					.id = id,
-					.linkage_name = linkage_name,
-					.ret = ret,
-					.arg_count = type->fn_type.arg_count,
-					.args =	args,
-					.arg_ids = arg_ids,
+		case AST_TYPEDEF: {
+			size_t id = cg->nodes[index].typdef.id;
+			Type backing = type_from_ast(&global_scope.tc, cg->nodes, cg->nodes[index].typdef.backing, err);
+			if(*err) goto RET;
+			size_t backing_index = types_register_nexist(&global_scope.tc, backing, err);
+			if(*err) goto RET;
+			types_register(
+				&global_scope.tc,
+				(Type) {
+					.typdef = {
+						.type = TYPE_TYPEDEF,
+						.id = id,
+						.backing = backing_index,
+					},
 				},
 				err
 			);
-
-			if(*err) {
-				free(args);
-				free(arg_ids);
-				goto RET;
-			}
+			if(*err) goto RET;
+		} break;
+		default:
+			break;
 		}
 	}
 
@@ -3076,6 +3430,9 @@ void codegen_gen(CodeGen *cg, Error	*err)
 			gen_fn_def(cg, index, fnnum, &global_scope, err);
 			if(*err) goto RET;
 			fnnum += 1;
+			break;
+
+		case AST_TYPEDEF:
 			break;
 
 		default:

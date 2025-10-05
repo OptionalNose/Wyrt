@@ -82,7 +82,7 @@ void dynarr_append(DynArr *da, void const *vals, size_t count, Error *err)
 	if(*err) goto RET;
 
 	for(size_t i = count - 1; i >= 0; i--) {
-		memcpy(dynarr_from_back(da, i), &vals[i], da->elem_size);
+		memcpy(dynarr_from_back(da, i), &((char*)vals)[i], da->elem_size);
 	}
 
 RET:

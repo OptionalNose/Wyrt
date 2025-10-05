@@ -20,17 +20,25 @@ const int test_count = (sizeof tests) / (sizeof tests[0]);
 #define BRIGHT_RED "\x1b[91m"
 #define RESET "\x1b[0m"
 
+#ifdef _WIN32
+#define COMPILER "wyrt.exe_Release "
+#define EXE "a.exe"
+#else
+#define COMPILER "./wyrt_Release "
+#define EXE "a.out"
+#endif
+
 int main(void)
 {
 	remove("err");
 	for(int i = 0; i < test_count; i++) {
 		printf("Test '%s': ", tests[i].file);
-		char *cmd = malloc(20 + strlen(tests[i].file) + 7 + 1);
+		char *cmd = malloc(strlen(COMPILER) + strlen(tests[i].file) + strlen("test/ 2> err") + 1);
 		FILE *file = NULL;
 		FILE *err = NULL;
 		FILE *out = NULL;
 		cmd[0] = 0;
-		strcat(cmd, "./wyrt_Release test/");
+		strcat(cmd, COMPILER "test/");
 		strcat(cmd, tests[i].file);
 		strcat(cmd, " 2> err");
 
@@ -43,38 +51,31 @@ int main(void)
 				goto CLEAN_AFTER;
 			}
 			goto PASS;
-		}
-
-		system("./a.out > out ; echo $? > exitcode");
-
-		out = fopen("out", "rb");
-		if(!out) {
-			printf(
-				"[" BRIGHT_RED "ERR" RESET "] Unable to open 'out'.\n"
-			);
+		} else if(tests[i].should_fail) {
+			printf("[" RED "FAIL" RESET "] Compiler Accepted\n");
 			goto CLEAN_AFTER;
 		}
+
+		int exitcode = system(EXE " > out");
+
 		if(tests[i].out) {
+			out = fopen("out", "r");
+			if(!out) {
+				printf(
+					"[" BRIGHT_RED "ERR" RESET "] Unable to open 'out'.\n"
+				);
+				goto CLEAN_AFTER;
+			}
+
 			const char *expected = tests[i].out;
 			while(*expected) {
-				if(*(expected++) != fgetc(out)) {
+				int c = fgetc(out);
+				if(c != *(expected++)) {
 					printf("[" RED "FAIL" RESET "] Mismatched Output.\n");
 					goto CLEAN_AFTER;
 				}
 			}
 		}
-
-
-		file = fopen("exitcode", "rb");
-		if(!file) {
-			printf(
-				"[" BRIGHT_RED "ERR" RESET "] Unable to open 'exitcode'.\n"
-			);
-			goto CLEAN_AFTER;
-		}
-
-		int exitcode;
-		fscanf(file, "%i", &exitcode);
 
 		if(exitcode != tests[i].exitcode) {
 			printf(

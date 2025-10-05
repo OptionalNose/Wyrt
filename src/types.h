@@ -88,3 +88,14 @@ void types_copy(
 	TypeContext const *restrict src,
 	Error *err
 );
+
+Type types_get_ptr(
+	TypeContext const *tc,
+	Type base,
+	TypeType ptr_type
+);
+
+bool type_is_subscriptable(
+	TypeContext const *tc,
+	Type t
+);

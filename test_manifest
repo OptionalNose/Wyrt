@@ -31,6 +31,11 @@
 },
 
 {
+	.file = "failing_abyss_read.w",
+	.should_fail = true
+},
+
+{
 	.file = "failing_types.w",
 	.should_fail = true,
 },
@@ -46,13 +51,13 @@
 },
 
 {
-	.file = "failing_struct_incompatible.w",
-	.should_fail = true,
+	.file = "struct.w",
+	.exitcode = 7,
 },
 
 {
-	.file = "struct.w",
-	.exitcode = 7,
+	.file = "failing_struct_incompatible.w",
+	.should_fail = true,
 },
 
 {

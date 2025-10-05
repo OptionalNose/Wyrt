@@ -334,15 +334,6 @@ static void parse_expr(
 					top = dynarr_from_back(&operator_stack, 0);
 			}
 
-			DebugInfo addr_debug = tokens[*index].debug.debug_info;
-
-			if(tokens[*index + 1].type != TOKEN_IDENT) {
-				fprintf(stderr, "Expected Identifier after '&', found ");
-				lexer_print_token_to_file(stderr, &tokens[*index], identifiers, strings);
-				*err = ERROR_UNEXPECTED_DATA;
-				goto RET;
-			}
-
 			dynarr_push(&operator_stack, &tokens[*index], err);
 			if(*err) goto RET;
 			break;

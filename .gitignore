@@ -20,3 +20,9 @@ test_runner
 a.ll
 a.ll.opt
 ir
+a.exe
+src/.*
+tags
+test_runner.exe
+wyrt.exe
+wyrt.exe_Release

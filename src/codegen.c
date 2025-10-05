@@ -1,3216 +1,1916 @@
 #include "codegen.h"
-#include "lexer.h"
-#include "parser.h"
-#include "types.h"
-#include "util.h"
-#include <stdio.h>
+
 #include <string.h>
 #include <assert.h>
 
+#include "ui.h"
+
+typedef struct {
+	gcc_jit_rvalue *expr;
+	Type type;
+} Expr;
+
+typedef struct {
+	gcc_jit_lvalue *lvalue;
+	Type type;
+	bool mut;
+	bool read;
+} Lvalue;
+
 void codegen_init(
-	CodeGen	*cg,
-	FILE *output,
-	const char *target_triple,
+	CodeGen *cg,
 	const AstNode *nodes,
 	size_t node_count,
-	char *const	*identifiers,
+	char *const *identifiers,
 	char *const *strings,
 	size_t string_count
 )
 {
-	*cg	= (CodeGen)	{
-		.output	= output,
+	gcc_jit_context *gcc = gcc_jit_context_acquire();
+
+	*cg = (CodeGen) {
 		.nodes = nodes,
-		.node_count	= node_count,
+		.node_count = node_count,
 		.identifiers = identifiers,
 		.strings = strings,
 		.string_count = string_count,
-		.fn_sig_count =	0,
+		.fn_count = 0,
 		.fn_sigs = NULL,
-		.metadata_counter =	0,
+		.gcc = gcc,
+		.named_types = NULL,
+		.named_types_gcc = NULL,
+		.named_type_count = 0,
 	};
+
+	return;
 }
 
 void codegen_clean(const CodeGen *cg)
 {
-	for(size_t i = 0; i	< cg->fn_sig_count;	i++) {
+	for(size_t i = 0; i < cg->fn_count; i++) {
 		free(cg->fn_sigs[i].args);
 		free(cg->fn_sigs[i].arg_ids);
 	}
-	if(cg->fn_sigs)	free(cg->fn_sigs);
+	free(cg->fn_sigs);
+	if(cg->gcc) gcc_jit_context_release(cg->gcc);
 }
 
-static void print_type(
-	FILE *file,
-	TypeContext	const *tc,
-	Type t,
-	Error *err
+static gcc_jit_location *gen_loc(gcc_jit_context *ctx, DebugInfo info)
+{
+	return gcc_jit_context_new_location(
+		ctx,
+		info.file,
+		info.line,
+		info.col	
+	);
+}
+
+static gcc_jit_type *get_named_type(CodeGen *cg, Type type, TypeContext *tc, Error *err)
+{
+	gcc_jit_type *ret = NULL;
+	for(size_t i = 0; i < cg->named_type_count; i++) {
+		if(types_are_equal(cg->named_types[i], type)) {
+			ret = cg->named_types_gcc[i];
+			goto RET;
+		}
+	}
+
+	char *arr_name = malloc(16);
+	CHECK_MALLOC(arr_name);
+
+	memcpy(arr_name, "_.0000000000000", 16);
+
+	int pos = 2;
+	for(size_t num = cg->named_type_count; num > 0; pos++, num /= 27) {
+		arr_name[pos] = 'A' + num % 27 - 1;
+	}
+	cg->named_type_count += 1;
+	cg->named_types = realloc(
+		cg->named_types,
+		sizeof(*cg->named_types) * cg->named_type_count
+	);
+	CHECK_MALLOC(cg->named_types);
+	cg->named_types_gcc = realloc(
+		cg->named_types_gcc,
+		sizeof(*cg->named_types_gcc) * cg->named_type_count
+	);	
+	CHECK_MALLOC(cg->named_types_gcc);
+	cg->named_type_names = realloc(
+		cg->named_type_names,
+		sizeof(*cg->named_type_names) * cg->named_type_count
+	);
+	CHECK_MALLOC(cg->named_type_names);
+
+	cg->named_type_names[cg->named_type_count - 1] = arr_name;
+	cg->named_types[cg->named_type_count - 1] = type;
+
+RET:
+	return ret;
+}
+
+static gcc_jit_type *gen_type(
+	CodeGen *cg,
+	Type type,
+	TypeContext *tc,
+	Error *err	
 )
 {
-	switch(t.type) {
-	case TYPE_NONE:
-		fprintf(stderr,	"[INTERNAL]: Attempting	to Generate	TYPE_NONE\n");
-		*err = ERROR_INTERNAL;
-		goto RET;
+	gcc_jit_type *ret = NULL;
+
+	type = type_resolve(tc, type);
+
+	switch(type.type) {
 	case TYPE_PRIMITIVE_U8:
-	case TYPE_PRIMITIVE_S8:
-		FPUTS_OR_ERR(file, "i8");
+		ret = gcc_jit_context_get_type(cg->gcc, GCC_JIT_TYPE_UINT8_T);
 		break;
 	case TYPE_PRIMITIVE_U16:
-	case TYPE_PRIMITIVE_S16:
-		FPUTS_OR_ERR(file, "i16");
+		ret = gcc_jit_context_get_type(cg->gcc, GCC_JIT_TYPE_UINT16_T);
 		break;
 	case TYPE_PRIMITIVE_U32:
-	case TYPE_PRIMITIVE_S32:
-		FPUTS_OR_ERR(file, "i32");
+		ret = gcc_jit_context_get_type(cg->gcc, GCC_JIT_TYPE_UINT32_T);
 		break;
 	case TYPE_PRIMITIVE_U64:
+		ret = gcc_jit_context_get_type(cg->gcc, GCC_JIT_TYPE_UINT64_T);
+		break;
+	case TYPE_PRIMITIVE_S8:
+		ret = gcc_jit_context_get_type(cg->gcc, GCC_JIT_TYPE_INT8_T);
+		break;
+	case TYPE_PRIMITIVE_S16:
+		ret = gcc_jit_context_get_type(cg->gcc, GCC_JIT_TYPE_INT16_T);
+		break;
+	case TYPE_PRIMITIVE_S32:
+		ret = gcc_jit_context_get_type(cg->gcc, GCC_JIT_TYPE_INT32_T);
+		break;
 	case TYPE_PRIMITIVE_S64:
-		FPUTS_OR_ERR(file, "i64");
+		ret = gcc_jit_context_get_type(cg->gcc, GCC_JIT_TYPE_INT64_T);
 		break;
 	case TYPE_PRIMITIVE_VOID:
-		FPUTS_OR_ERR(file, "void");
+		ret = gcc_jit_context_get_type(cg->gcc, GCC_JIT_TYPE_VOID);
 		break;
+
 	case TYPE_POINTER_CONST:
 	case TYPE_POINTER_ABYSS:
-	case TYPE_POINTER_VAR:
-		FPUTS_OR_ERR(file, "ptr");
-		break;
-	case TYPE_ARRAY:
-		FPRINTF_OR_ERR(file, "[%zi x ",	t.array.len);
-		print_type(file, tc, tc->types[t.array.base], err);
-		FPUTS_OR_ERR(file, "]");
-		break;
+	case TYPE_POINTER_VAR: {
+		gcc_jit_type *base = gen_type(cg, tc->types[type.pointer.base], tc, err);
+		if(*err) goto RET;
+
+		ret = gcc_jit_type_get_pointer(base);
+	} break;
+	
+	case TYPE_ARRAY: {
+		//Note: gccjit does not do array-decay
+		gcc_jit_type *elem = gen_type(cg, tc->types[type.array.base], tc, err);
+		if(*err) goto RET;
+
+		ret = gcc_jit_context_new_array_type(
+			cg->gcc,
+			NULL,
+			elem,
+			type.array.len
+		);
+	} break;
+
 	case TYPE_SLICE_CONST:
 	case TYPE_SLICE_ABYSS:
-	case TYPE_SLICE_VAR:
-		FPUTS_OR_ERR(file, "{ptr, i64}");
-		break;
-	case TYPE_STRUCT:
-		FPUTS_OR_ERR(file, "{");
-		for(size_t i = 0; i	< t.struct_type.member_count; i++) {
-			print_type(
-				file,
+	case TYPE_SLICE_VAR: {
+		ret = get_named_type(cg, type, tc, err);
+		if(*err) goto RET;
+		if(ret) goto RET;
+
+		size_t named_type_index = cg->named_type_count - 1;
+
+		gcc_jit_type *elem_type = gen_type(cg, tc->types[type.array.base], tc, err);
+		if(*err) goto RET;
+
+		gcc_jit_field *(fields[2]);
+
+	   	fields[0] = gcc_jit_context_new_field(
+			cg->gcc,
+			NULL,
+			gcc_jit_type_get_pointer(elem_type),
+			"ptr"
+		);
+
+		fields[1] = gcc_jit_context_new_field(
+			cg->gcc,
+			NULL,
+			gcc_jit_context_get_type(cg->gcc, GCC_JIT_TYPE_UINT64_T),
+			"len"
+		);
+
+		gcc_jit_struct *struct_ = gcc_jit_context_new_struct_type(
+			cg->gcc,
+			NULL,
+			cg->named_type_names[named_type_index],
+			2,
+			fields
+		);
+
+		ret = gcc_jit_struct_as_type(struct_);
+		cg->named_types_gcc[named_type_index] = ret;
+	} break;
+
+	case TYPE_STRUCT: {
+		ret = get_named_type(cg, type, tc, err);
+		if(*err) goto RET;
+		if(ret) goto RET;
+
+		size_t named_type_index = cg->named_type_count - 1;
+
+		gcc_jit_field **fields = malloc(sizeof(*fields) * type.struct_type.member_count);
+		CHECK_MALLOC(fields);
+
+		for(size_t i = 0; i < type.struct_type.member_count; i++) {
+			gcc_jit_type *member_type = gen_type(
+				cg,
+				tc->types[type.struct_type.member_types[i]],
 				tc,
-				tc->types[t.struct_type.member_types[i]],
 				err
 			);
-			if(*err) goto RET;
-			if(i ==	t.struct_type.member_count - 1)	{
-				FPUTS_OR_ERR(file, "}");
-			} else {
-				FPUTS_OR_ERR(file, ", ");
+			if(*err) {
+				free(fields);
+				goto RET;
 			}
+
+			fields[i] = gcc_jit_context_new_field(
+				cg->gcc,
+				NULL,
+				member_type,
+				cg->identifiers[type.struct_type.member_name_ids[i]]
+			);
 		}
-		break;
-	case TYPE_TYPEDEF:
-		print_type(file, tc, tc->types[t.typdef.backing], err);
-		if(*err) goto RET;
-		break;
+
+		ret = gcc_jit_struct_as_type(gcc_jit_context_new_struct_type(
+				cg->gcc,
+				NULL,
+				cg->named_type_names[named_type_index],
+				type.struct_type.member_count,
+				fields
+		));
+		cg->named_types_gcc[named_type_index] = ret;
+		free(fields);
+	} break;
+
+	default:
+		fprintf(stderr, "[INTERNAL]: Cannot Generate Type #%d\n", type.type);
+		*err = ERROR_UNEXPECTED_DATA;
+		goto RET;	
 	}
 
 RET:
-	return;
+	return ret;
 }
 
-static Var *find_var(const Scope *scope, size_t	id)
-{
-	for(size_t i = 0; i	< scope->param_count; i++) {
-		if(id == scope->params[i].id) return &scope->params[i];
-	}
-	for(size_t i = 0; i	< scope->var_count;	i++) {
-		if(id == scope->vars[i].id)	return &scope->vars[i];
-	}
-	return NULL;
-}
-
-static Type type_of_expr(
-	CodeGen const *cg,
+static gcc_jit_function *gen_fnsig(
+	CodeGen *cg,
+	FnSig *sig,
 	Scope *scope,
 	size_t i,
 	Error *err
 )
 {
-	Type type;
+	gcc_jit_function *fn = NULL;
+	DynArr args;
+	DynArr arg_ids;
+	DynArr arg_gccs;
+	dynarr_init(&args, sizeof(Type));	
+	dynarr_init(&arg_ids, sizeof(size_t));
+	dynarr_init(&arg_gccs, sizeof(gcc_jit_param*));
+	StringBuilder arg_builder = { 0 };
+	gcc_jit_type *ret_gcc;
 
-	AstNode expr = cg->nodes[i];
+	AstNode ident = cg->nodes[cg->nodes[i].fn_def.ident];
+	assert(ident.type == AST_IDENT);
+	size_t id = ident.ident.id;
 
-	switch(expr.type) {
-	case AST_IDENT: {
-		const Var *var = find_var(scope, expr.ident.id);
-		if(!var) {
-			fprintf(
-				stderr,
-				"Use of Undeclared Variable '%s' at ",
-				cg->identifiers[expr.ident.id]
-			);
-			lexer_print_debug_to_file(stderr, &expr.debug.debug_info);
-			fprintf(stderr, "\n");
-			*err = ERROR_NOT_FOUND;
-			goto RET;
-		}
-		type = var->type;
-	} break;
-
-	case AST_INT_LIT: {
-		if(expr.int_lit.val <= UINT8_MAX) {
-			type.type = TYPE_PRIMITIVE_U8;
-			break;
-		} else if(expr.int_lit.val <= UINT16_MAX) {
-			type.type = TYPE_PRIMITIVE_U16;
-			break;
-		} else if(expr.int_lit.val <= UINT32_MAX) {
-			type.type = TYPE_PRIMITIVE_U32;
-			break;
-		} else {
-			type.type = TYPE_PRIMITIVE_U64;
-			break;
-		}
-	} break;
-
-	case AST_MUL:
-	case AST_DIV:
-	case AST_ADD:
-	case AST_SUB: {
-		Type lhs = type_of_expr(
-			cg,
-			scope,
-			expr.binop.lhs,
-			err
-		);
-		if(*err) goto RET;
-		Type rhs = type_of_expr(
-			cg,
-			scope,
-			expr.binop.rhs,
-			err
-		);
-		if(*err) goto RET;
-
-		if(types_are_compatible(&scope->tc, lhs, rhs)) {
-			type = rhs;
-			break;
-		} else if(types_are_compatible(&scope->tc, rhs, lhs)) {
-			type = lhs;
-			break;
-		} else {
-			fprintf(
-				stderr,
-				"Cannot Perform Arithmetic on Non-Compatible Types at "
-			);
-			lexer_print_debug_to_file(stderr, &expr.debug.debug_info);
-			fprintf(stderr, "\n");
-			*err = ERROR_UNEXPECTED_DATA;
-			goto RET;
-		}
-	} break;
-
-	case AST_FN_CALL: {
-		bool found = false;
-		for(size_t i = 0; i < cg->fn_sig_count; i++) {
-			if(cg->fn_sigs[i].id == expr.fn_call.fn_id) {
-				found = true;
-				type = cg->fn_sigs[i].ret;
-				break;
-			}
-		}
-
-		if(!found) {
-			fprintf(stderr, "Cannot Call undeclared Function at ");
-			lexer_print_debug_to_file(stderr, &expr.debug.debug_info);
-			fprintf(stderr, "\n");
-			*err = ERROR_NOT_FOUND;
-			goto RET;
-		}
-	} break;
-
-	case AST_DEREF: {
-		Type ptr = type_of_expr(
-			cg,
-			scope,
-			expr.deref.ptr,
-			err
-		);
-		if(*err) goto RET;
-
-		type = scope->tc.types[ptr.pointer.base];
-	} break;
-
-	case AST_ADDR: {
-		AstNode parent = cg->nodes[expr.addr.base];
-		bool seeking = true;
-		while(seeking) {
-			switch(parent.type) {
-			case AST_IDENT: {
-				Var *var = find_var(scope, parent.ident.id);
-				if(!var) {
-					fprintf(
-						stderr,
-						"Identifier '%s' undeclared at ",
-						cg->identifiers[parent.ident.id]
-					);
-					lexer_print_debug_to_file(stderr, &expr.debug.debug_info);
-					fprintf(stderr, "\n");
-					*err = ERROR_NOT_FOUND;
-					goto RET;
-				}
-
-				if(!var->declared) {
-					fprintf(
-						stderr,
-						"Cannot Use Identifier '%s' before it is declared at ",
-						cg->identifiers[parent.ident.id]
-					);
-					lexer_print_debug_to_file(
-						stderr,
-						&parent.debug.debug_info
-					);
-					fprintf(stderr, "\n");
-					*err = ERROR_UNEXPECTED_DATA;
-					goto RET;
-				}
-
-				type.type = var->mut ? TYPE_POINTER_VAR : TYPE_POINTER_CONST;
-
-				size_t type_index = SIZE_MAX;
-				for(size_t i = 0; i < scope->tc.count; i++) {
-					if(types_are_equal(var->type, scope->tc.types[i])) {
-						type_index = i;
-						break;
-					}
-				}
-
-				if(type_index == SIZE_MAX) {
-					assert(0);
-				}
-
-				type.pointer.base = type_index;
-				seeking = false;
-			} break;
-
-			case AST_FN_CALL: {
-				Type ret = {.type = TYPE_NONE };
-
-				for(size_t i = 0; i < cg->fn_sig_count; i++) {
-					if(cg->fn_sigs[i].id == parent.fn_call.fn_id) {
-						ret = cg->fn_sigs[i].ret;
-						break;
-					}
-				}
-				if(!ret.type) {
-					fprintf(stderr, "Cannot Call Undeclared Function at ");
-					lexer_print_debug_to_file(
-						stderr,
-						&parent.debug.debug_info
-					);
-					fprintf(stderr, "\n");
-					*err = ERROR_UNEXPECTED_DATA;
-					goto RET;
-				}
-
-				switch(ret.type) {
-				case TYPE_POINTER_CONST:
-				case TYPE_POINTER_ABYSS:
-				case TYPE_POINTER_VAR:
-					type.type = ret.type;
-					break;
-
-				case TYPE_SLICE_CONST:
-					type.type = TYPE_POINTER_CONST;
-					break;
-				case TYPE_SLICE_ABYSS:
-					type.type = TYPE_POINTER_ABYSS;
-					break;
-				case TYPE_SLICE_VAR:
-					type.type = TYPE_POINTER_VAR;
-					break;
-
-				default:
-					type.type = TYPE_POINTER_CONST;
-					break;
-				}
-				seeking = false;
-			} break;
-
-			case AST_DEREF: {
-				parent = cg->nodes[parent.deref.ptr];
-			} break;
-
-			case AST_SUBSCRIPT: {
-				parent = cg->nodes[parent.subscript.arr];
-			} break;
-
-			case AST_STRUCT_ACCESS:
-			case AST_ARROW: {
-				parent = cg->nodes[parent.struct_access.parent];
-			} break;
-
-			default:
-				fprintf(stderr, "Cannot Take Address of Value at ");
-				lexer_print_debug_to_file(stderr, &expr.debug.debug_info);
-				fprintf(stderr, "\n");
-				*err = ERROR_UNEXPECTED_DATA;
-				goto RET;
-			}
-		}
-	} break;
-
-	case AST_SUBSCRIPT: {
-		Type arr = type_of_expr(
-			cg,
-			scope,
-			expr.subscript.arr,
-			err
-		);
-		if(*err) goto RET;
-
-		type = scope->tc.types[arr.slice.base];
-	} break;
-
-	case AST_ARRAY_LIT: {
-		Type elem = type_of_expr(
-			cg,
-			scope,
-			expr.array_lit.elems[0],
-			err
-		);
-		if(*err) goto RET;
-
-		size_t elem_index = types_register_nexist(&scope->tc, elem, err);
-		if(*err) goto RET;
-
-		type = (Type) {
-			.array = {
-				.type = TYPE_ARRAY,
-				.base = elem_index,
-				.len = expr.array_lit.elem_count
-			},
-		};
-	} break;
-
-	case AST_STRUCT_LIT: {
-		type.type = TYPE_STRUCT;
-		type.struct_type.member_count = expr.struct_lit.member_count;
-		type.struct_type.member_types = malloc(
-			expr.struct_lit.member_count * sizeof(size_t)
-		);
-		CHECK_MALLOC(type.struct_type.member_types);
-		type.struct_type.member_name_ids = malloc(
-			expr.struct_lit.member_count * sizeof(size_t)
-		);
-		CHECK_MALLOC(type.struct_type.member_name_ids);
-
-		for(size_t i = 0; i < expr.struct_lit.member_count; i++) {
-			Type member = type_of_expr(
-				cg,
-				scope,
-				expr.struct_lit.member_values[i],
-				err
-			);
-			if(*err) goto RET;
-
-			size_t index = types_register_nexist(&scope->tc, member, err);
-			if(*err) goto RET;
-
-			type.struct_type.member_types[i] = index;
-		}
-
-		memcpy(
-			type.struct_type.member_name_ids,
-			expr.struct_lit.member_name_ids,
-			sizeof(size_t)*expr.struct_lit.member_count
-		);
-	} break;
-
-	case AST_STRUCT_ACCESS: {
-		Type parent = type_of_expr(
-			cg,
-			scope,
-			expr.struct_access.parent,
-			err
-		);
-		if(*err) goto RET;
-
-		if(parent.type != TYPE_STRUCT) {
-			fprintf(stderr, "Cannot Access Member of non-struct Type at ");
-			lexer_print_debug_to_file(stderr, &expr.debug.debug_info);
-			fprintf(stderr, "\n");
-			*err = ERROR_UNEXPECTED_DATA;
-			goto RET;
-		}
-
-		type.type = TYPE_NONE;
-		for(size_t i = 0; i < parent.struct_type.member_count; i++) {
-			if(expr.struct_access.member_id
-			   == parent.struct_type.member_name_ids[i]
-			) {
-				type = scope->tc.types[parent.struct_type.member_types[i]];
-				break;
-			}
-		}
-		if(!type.type) {
-			fprintf(
-				stderr,
-				"No Member '%s' in struct at ",
-				cg->identifiers[expr.struct_access.member_id]
-			);
-			lexer_print_debug_to_file(stderr, &expr.debug.debug_info);
-			fprintf(stderr, "\n");
-			*err = ERROR_UNEXPECTED_DATA;
-			goto RET;
-		}
-	} break;
-
-	case AST_ARROW: {
-		Type parent = type_of_expr(
-			cg,
-			scope,
-			expr.struct_access.parent,
-			err
-		);
-		if(*err) goto RET;
-
-		if(parent.type != TYPE_POINTER_CONST
-			&& parent.type != TYPE_POINTER_ABYSS
-			&& parent.type != TYPE_POINTER_VAR
-		) {
-			fprintf(stderr, "Cannot Use Arrow Operator on non-Pointer Type at ");
-			lexer_print_debug_to_file(stderr, &expr.debug.debug_info);
-			fprintf(stderr, "\n");
-			*err = ERROR_UNEXPECTED_DATA;
-			goto RET;
-		}
-
-		const Type target = type_resolve(&scope->tc, scope->tc.types[parent.pointer.base]);
-
-		if(target.type != TYPE_STRUCT) {
-			fprintf(stderr, "Cannot Access Member of non-struct Type at ");
-			lexer_print_debug_to_file(stderr, &expr.debug.debug_info);
-			fprintf(stderr, "\n");
-			*err = ERROR_UNEXPECTED_DATA;
-			goto RET;
-		}
-
-		type.type = TYPE_NONE;
-		for(size_t i = 0; i < target.struct_type.member_count; i++) {
-			if(expr.struct_access.member_id
-			   == target.struct_type.member_name_ids[i]
-			) {
-				type = scope->tc.types[target.struct_type.member_types[i]];
-				break;
-			}
-		}
-		if(!type.type) {
-			fprintf(
-				stderr,
-				"No Member '%s' in struct at ",
-				cg->identifiers[expr.struct_access.member_id]
-			);
-			lexer_print_debug_to_file(stderr, &expr.debug.debug_info);
-			fprintf(stderr, "\n");
-			*err = ERROR_UNEXPECTED_DATA;
-			goto RET;
-		}
-	} break;
-
-	case AST_STRING_LIT:
-	case AST_ZSTRING_LIT:
-		type = (Type) {.slice = {.type = TYPE_SLICE_CONST, .base = 0}};
-		break;
-	case AST_CSTRING_LIT:
-		type = (Type) {.pointer = {.type = TYPE_POINTER_CONST, .base = 0}};
-		break;
-
-	default:
-		fprintf(stderr, "Expected Expression at ");
-		lexer_print_debug_to_file(stderr, &expr.debug.debug_info);
-		fprintf(stderr, "\n");
-		*err = ERROR_UNEXPECTED_DATA;
-		goto RET;
-	}
-
-RET:
-	types_register_nexist(&scope->tc, type, err);
-	type = type_resolve(&scope->tc, type);
-	return type;
-}
-
-static void gen_expr(
-	CodeGen	*cg,
-	const AstNode *expr,
-	Type expected,
-	size_t *temp_counter,
-	Scope *scope,
-	Error *err
-);
-
-static void	gen_fn_call(
-	CodeGen	*cg,
-	const AstNode *call,
-	Type expected,
-	size_t *temp_counter,
-	Scope *scope,
-	Error *err
-)
-{
-	size_t *args = malloc(call->fn_call.arg_count *	sizeof*args);
-	CHECK_MALLOC(args);
-
-	size_t fn_index	= SIZE_MAX;
-	for(size_t i = 0; i	< cg->fn_sig_count;	i++) {
-		if(cg->fn_sigs[i].id ==	call->fn_call.fn_id) {
-			fn_index = i;
-			break;
-		}
-	}
-	if(fn_index	== SIZE_MAX) {
-		fprintf(
-			stderr,
-			"Calling Undeclared	Function %s	at ",
-			cg->identifiers[call->fn_call.fn_id]
-		);
-		lexer_print_debug_to_file(stderr, &call->debug.debug_info);
-		fprintf(stderr,	"\n");
-		*err = ERROR_UNEXPECTED_DATA;
-		goto RET;
-	}
-
-	const FnSig	sig	= cg->fn_sigs[fn_index];
-	if(sig.arg_count !=	call->fn_call.arg_count) {
-		fprintf(
-			stderr,
-			"Expected %zi arguments	to function, found %zi at ",
-			sig.arg_count,
-			call->fn_call.arg_count
-		);
-		lexer_print_debug_to_file(stderr, &call->debug.debug_info);
-		fprintf(stderr,	"\n");
-		*err = ERROR_UNEXPECTED_DATA;
-		goto RET;
-	}
-
-	if(expected.type && !types_are_equal(expected, sig.ret))	{
-		fprintf(stderr,	"Function Returns '");
-		type_print(stderr, &scope->tc, sig.ret, cg->identifiers);
-		fprintf(stderr,	"',	Expected '");
-		type_print(stderr, &scope->tc, expected, cg->identifiers);
-		fprintf(stderr,	" at ");
-		lexer_print_debug_to_file(stderr, &call->debug.debug_info);
-		fprintf(stderr,	"\n");
-		*err = ERROR_UNEXPECTED_DATA;
-		goto RET;
-	}
-
-	for(size_t i = 0; i	< sig.arg_count; i++) {
-		gen_expr(
-			cg,
-			&cg->nodes[call->fn_call.args[i]],
-			sig.args[i],
-			temp_counter,
-			scope,
-			err
-		);
-		if(*err) goto RET;
-
-		if(sig.args[i].type == TYPE_SLICE_CONST
-		   || sig.args[i].type == TYPE_SLICE_ABYSS
-		   || sig.args[i].type == TYPE_SLICE_VAR
-		) {
-			FPRINTF_OR_ERR(
-				cg->output,
-				"%%.%zi.0 = extractvalue {ptr, i64} %%%zi, 0\n"
-				"%%.%zi.1 = extractvalue {ptr, i64} %%%zi, 1\n",
-				*temp_counter, *temp_counter - 1,
-				*temp_counter, *temp_counter - 1
-			);
-			*temp_counter += 1;
-		}
-
-		args[i]	= *temp_counter	- 1;
-	}
-
-	if(sig.ret.type != TYPE_PRIMITIVE_VOID) {
-		FPRINTF_OR_ERR(cg->output, "%%%zi = ", *temp_counter);
-		*temp_counter += 1;
-	}
-
-	FPUTS_OR_ERR(cg->output, "call ");
-
-	print_type(cg->output, &scope->tc, sig.ret,	err);
-
-	if(sig.linkage_name != SIZE_MAX) {
-		FPRINTF_OR_ERR(cg->output, " @%s(", cg->strings[sig.linkage_name]);
+	AstNode block = cg->nodes[cg->nodes[i].fn_def.block];
+	bool imported;
+	size_t linkage_name;
+	
+	if(block.type == AST_EXTERN) {
+		AstNode name = cg->nodes[block.extrn.name];
+		assert(name.type == AST_STRING_LIT);
+		linkage_name = name.string_lit.id;
+		imported = true;
 	} else {
-		FPRINTF_OR_ERR(cg->output, " @%s(", cg->identifiers[sig.id]);
+		linkage_name = id;
+		imported = false;
 	}
 
-	for(size_t i = 0; i	< sig.arg_count; i++) {
-		if(sig.args[i].type == TYPE_SLICE_CONST
-		   || sig.args[i].type == TYPE_SLICE_ABYSS
-		   || sig.args[i].type == TYPE_SLICE_VAR
+	AstNode type = cg->nodes[cg->nodes[i].fn_def.fn_type];
+	assert(type.type == AST_FN_TYPE);
+
+	Type ret = type_from_ast(
+		&scope->tc,
+		cg->nodes,
+		type.fn_type.ret_type,
+		err
+	);
+	if(*err) goto RET;
+
+	ret_gcc = gen_type(cg, ret, &scope->tc, err);
+	if(*err) goto RET;
+
+
+	for(size_t i = 0; i < type.fn_type.arg_count; i++) {
+		Type arg_type = type_from_ast(
+			&scope->tc,
+			cg->nodes,
+			type.fn_type.args[2*i + 1],
+			err
+		);
+		if(*err) goto RET;
+
+		AstNode arg = cg->nodes[type.fn_type.args[2*i]];
+		assert(arg.type == AST_IDENT);
+
+		size_t arg_id = arg.ident.id;
+
+		dynarr_push(&args, &arg_type, err);
+		if(*err) goto RET;
+		dynarr_push(&arg_ids, &arg_id, err);
+		if(*err) goto RET;
+
+		if(arg_type.type == TYPE_SLICE_CONST
+			|| arg_type.type == TYPE_SLICE_ABYSS
+			|| arg_type.type == TYPE_SLICE_VAR
 		) {
-			FPRINTF_OR_ERR(
-				cg->output,
-				"ptr %%.%zi.0, i64 %%.%zi.1",
-				args[i], args[i]
-			);
-		} else {
-			print_type(cg->output, &scope->tc, sig.args[i], err);
+			gcc_jit_type *ptr_type = gcc_jit_type_get_pointer(gen_type(
+				cg,
+				scope->tc.types[arg_type.slice.base],
+				&scope->tc,
+				err
+			));
 			if(*err) goto RET;
-			FPRINTF_OR_ERR(cg->output, " %%%zi", args[i]);
-		}
 
-		if(i != sig.arg_count - 1) {
-			FPUTS_OR_ERR(cg->output, ", ");
+			arg_builder.count = 0;
+			string_builder_printf(&arg_builder, err, "%s.ptr", cg->identifiers[arg_id]);
+			if(*err) goto RET;
+
+			gcc_jit_param *ptr = gcc_jit_context_new_param(
+				cg->gcc,
+				gen_loc(cg->gcc, arg.debug.debug_info),
+				ptr_type,
+				arg_builder.str
+			);
+
+			dynarr_push(&arg_gccs, &ptr, err);
+			if(*err) goto RET;
+
+			arg_builder.count = 0;
+			string_builder_printf(&arg_builder, err, "%s.len", cg->identifiers[arg_id]);
+			if(*err) goto RET;
+
+			gcc_jit_param *len = gcc_jit_context_new_param(
+				cg->gcc,
+				gen_loc(cg->gcc, arg.debug.debug_info),
+				gcc_jit_context_get_type(cg->gcc, GCC_JIT_TYPE_UINT64_T),
+				arg_builder.str
+			);
+
+			dynarr_push(&arg_gccs, &len, err);
+			if(*err) goto RET;
+		} else {
+			gcc_jit_type *arg_type_gcc = gen_type(cg, arg_type, &scope->tc, err);
+			if(*err) goto RET;
+
+			gcc_jit_param *arg_gcc = gcc_jit_context_new_param(
+				cg->gcc,
+				gen_loc(cg->gcc, arg.debug.debug_info),
+				arg_type_gcc,
+				cg->identifiers[arg_id]
+			);
+
+			dynarr_push(&arg_gccs, &arg_gcc, err);
+			if(*err) goto RET;
 		}
 	}
-	FPUTS_OR_ERR(cg->output, ")\n");
 
-RET:
-	if(args) free(args);
-	return;
-}
-
-static void gen_assign(
-	CodeGen	*cg,
-	const AstNode *assign,
-	size_t *temp_counter,
-	Scope *scope,
-	Error *err
-)
-{
-	const AstNode lhs =	cg->nodes[assign->assign.var];
-
-	AstNode expr = {
-		.binop = {
-			.lhs = assign->assign.var,
-			.rhs = assign->assign.expr,
-		},
+	*sig = (FnSig) {
+		.id = id,
+		.linkage_name = linkage_name,
+		.ret = ret,
+		.arg_count = args.count,
+		.args = args.data,
+		.arg_ids = arg_ids.data,
 	};
 
-	switch(assign->type) {
-	case AST_ASSIGN:
-		expr = cg->nodes[assign->assign.expr];
-		break;
-	case AST_MUL_ASSIGN:
-		expr.type = AST_MUL;
-		break;
-	case AST_DIV_ASSIGN:
-		expr.type = AST_DIV;
-		break;
-	case AST_ADD_ASSIGN:
-		expr.type = AST_ADD;
-		break;
-	case AST_SUB_ASSIGN:
-		expr.type = AST_SUB;
-		break;
-	default:
-		assert(0);
-	}
-
-	switch(lhs.type) {
-	case AST_IDENT:
-		do {} while(0);
-		Var	*ident = find_var(scope, lhs.ident.id);
-		if(!ident) {
-			fprintf(
-				stderr,
-				"Undeclared	variable '%s' at ",
-				cg->identifiers[lhs.ident.id]
-			);
-			lexer_print_debug_to_file(stderr, &lhs.debug.debug_info);
-			fprintf(stderr,	"\n");
-			*err = ERROR_UNEXPECTED_DATA;
-			goto RET;
-		}
-
-		gen_expr(
-			cg,
-			&expr,
-			ident->type,
-			temp_counter,
-			scope,
-			err
-		);
-		if(*err) goto RET;
-
-		FPUTS_OR_ERR(cg->output, "store ");
-		print_type(cg->output, &scope->tc, ident->type,	err);
-		if(*err) goto RET;
-		FPRINTF_OR_ERR(
-			cg->output,
-			" %%%zi, ptr %%%s\n",
-			*temp_counter -	1,
-			cg->identifiers[ident->id]
-		);
-		break;
-
-	case AST_DEREF: {
-		Type ptr_type = type_of_expr(
-			cg,
-			scope,
-			lhs.deref.ptr,
-			err
-		);
-		if(*err) goto RET;
-
-		if(ptr_type.type != TYPE_POINTER_ABYSS
-		   && ptr_type.type != TYPE_POINTER_VAR
-		) {
-			if(ptr_type.type == TYPE_POINTER_CONST) {
-				fprintf(stderr, "Cannot Assign to const Pointer at ");
-				lexer_print_debug_to_file(stderr, &assign->debug.debug_info);
-				fprintf(stderr, "\n");
-				*err = ERROR_UNEXPECTED_DATA;
-				goto RET;
-			}
-			fprintf(stderr, "Cannot Dereference non-Pointer Type '");
-			type_print(stderr, &scope->tc, ptr_type, cg->identifiers);
-			fprintf(stderr, "' at ");
-			lexer_print_debug_to_file(stderr, &assign->debug.debug_info);
-			fprintf(stderr, "\n");
-			*err = ERROR_UNEXPECTED_DATA;
-			goto RET;
-		}
-
-		gen_expr(
-			cg,
-			&cg->nodes[lhs.deref.ptr],
-			ptr_type,
-			temp_counter,
-			scope,
-			err
-		);
-		if(*err) goto RET;
-		const size_t ptr_ssa = *temp_counter - 1;
-
-		Type base_type = scope->tc.types[ptr_type.pointer.base];
-
-		gen_expr(
-			cg,
-			&expr,
-			base_type,
-			temp_counter,
-			scope,
-			err
-		);
-		if(*err) goto RET;
-
-		FPUTS_OR_ERR(cg->output, "store ");
-		print_type(cg->output, &scope->tc, base_type, err);
-		FPRINTF_OR_ERR(
-			cg->output,
-			" %%%zi, ptr %%%zi\n",
-			*temp_counter - 1,
-			ptr_ssa
-		);
-	} break;
-
-	case AST_SUBSCRIPT: {
-		const Type array_type =	type_of_expr(
-			cg,
-			scope,
-			lhs.subscript.arr,
-			err
-		);
-		if(*err) goto RET;
-
-		gen_expr(
-			cg,
-			&cg->nodes[lhs.subscript.arr],
-			array_type,
-			temp_counter,
-			scope,
-			err
-		);
-		if(*err) goto RET;
-		const size_t array_ssa = *temp_counter - 1;
-
-		if(array_type.type != TYPE_ARRAY
-			&& array_type.type != TYPE_SLICE_ABYSS
-			&& array_type.type != TYPE_SLICE_VAR
-		) {
-			if(array_type.type == TYPE_SLICE_CONST)	{
-				fprintf(stderr,	"Cannot	Assign to const	Slice at ");
-				lexer_print_debug_to_file(
-					stderr,
-					&cg->nodes[lhs.subscript.arr].debug.debug_info
-				);
-				fprintf(stderr,	"\n");
-				*err = ERROR_UNEXPECTED_DATA;
-				goto RET;
-			}
-			fprintf(stderr,	"Expected Slice	Type at	");
-			lexer_print_debug_to_file(
-				stderr,
-				&cg->nodes[lhs.subscript.arr].debug.debug_info
-			);
-			fprintf(stderr,	"\n");
-			*err = ERROR_UNEXPECTED_DATA;
-			goto RET;
-		}
-
-		if(array_type.type == TYPE_ARRAY) {
-			bool seeking = true;
-			AstNode parent = cg->nodes[lhs.subscript.arr];
-			while(seeking) {
-				switch(parent.type) {
-				case AST_IDENT: {
-					const Var *var = find_var(scope, parent.ident.id);
-					seeking = false;
-				} break;
-				case AST_DEREF: {
-					Type ptr_type = type_of_expr(
-						cg,
-						scope,
-						parent.deref.ptr,
-						err
-					);
-					if(*err) goto RET;
-
-					// know that it's a pointer because it passed sema
-					if(ptr_type.type == TYPE_POINTER_CONST) {
-						fprintf(stderr, "Cannot Assign to const Pointer at ");
-						lexer_print_debug_to_file(
-							stderr,
-							&lhs.debug.debug_info
-						);
-						fprintf(stderr, "\n");
-						*err = ERROR_UNEXPECTED_DATA;
-						goto RET;
-					}
-					seeking = false;
-				} break;
-				case AST_SUBSCRIPT: {
-					parent = cg->nodes[parent.subscript.arr];
-				} break;
-				case AST_STRUCT_ACCESS: {
-					Type struct_type = type_of_expr(
-						cg,
-						scope,
-						parent.struct_access.parent,
-						err
-					);
-					if(*err) goto RET;
-					Type member_type = {.type = TYPE_NONE};
-					for(
-						size_t i = 0;
-						i < struct_type.struct_type.member_count;
-						i++
-					) {
-						if(struct_type.struct_type.member_name_ids[i]
-							== parent.struct_access.member_id
-						) {
-							member_type = scope->tc.types[
-								struct_type.struct_type.member_types[i]
-							];
-							break;
-						}
-					}
-					if(member_type.type == TYPE_NONE) {
-						fprintf(
-							stderr,
-							"No Member '%s' in Type at ",
-							cg->identifiers[parent.struct_access.member_id]
-						);
-						lexer_print_debug_to_file(
-							stderr,
-							&parent.debug.debug_info
-						);
-						fprintf(stderr, "\n");
-						*err = ERROR_UNEXPECTED_DATA;
-						goto RET;
-					}
-					switch(member_type.type) {
-					case TYPE_POINTER_CONST:
-						fprintf(stderr, "Cannot Assign to const Pointer at ");
-						lexer_print_debug_to_file(
-							stderr,
-							&lhs.debug.debug_info
-						);
-						fprintf(stderr, "\n");
-						*err = ERROR_UNEXPECTED_DATA;
-						goto RET;
-					case TYPE_POINTER_ABYSS:
-					case TYPE_POINTER_VAR:
-						seeking = false;
-						break;
-					case TYPE_SLICE_CONST:
-						fprintf(stderr, "Cannot Assign to const Slice at ");
-						lexer_print_debug_to_file(
-							stderr,
-							&lhs.debug.debug_info
-						);
-						fprintf(stderr, "\n");
-						*err = ERROR_UNEXPECTED_DATA;
-						goto RET;
-					case TYPE_SLICE_ABYSS:
-					case TYPE_SLICE_VAR:
-						seeking = false;
-						break;
-					default:
-						parent = cg->nodes[parent.struct_access.parent];
-						break;
-					}
-				} break;
-				case AST_FN_CALL: {
-					for(size_t i = 0; i < cg->fn_sig_count; i++) {
-						if(cg->fn_sigs[i].id == parent.fn_call.fn_id) {
-							switch(cg->fn_sigs[i].ret.type) {
-							case TYPE_POINTER_ABYSS:
-							case TYPE_POINTER_VAR:
-							case TYPE_SLICE_ABYSS:
-							case TYPE_SLICE_VAR:
-								seeking = false;
-								break;
-							default:
-								fprintf(
-									stderr,
-									"Cannot Assign to Temporary Value at "
-								);
-								lexer_print_debug_to_file(
-									stderr,
-									&parent.debug.debug_info
-								);
-								fprintf(stderr, "\n");
-								*err = ERROR_UNEXPECTED_DATA;
-								goto RET;
-							}
-						}
-					}
-					// Will find because passed sema
-					break;
-				}
-				default:
-					seeking = false;
-					break;
-				}
-			}
-		}
-
-		gen_expr(
-			cg,
-			&cg->nodes[lhs.subscript.index],
-			(Type) {.type =	TYPE_PRIMITIVE_U64},
-			temp_counter,
-			scope,
-			err
-		);
-		if(*err) goto RET;
-
-		const size_t index_ssa = *temp_counter - 1;
-
-		const size_t subscript_location	= *temp_counter;
-		*temp_counter += 1;
-		FPRINTF_OR_ERR(
-			cg->output,
-			"%%%zi = getelementptr inbounds	",
-			subscript_location
-		);
-		print_type(cg->output, &scope->tc, array_type, err);
-		if(*err) goto RET;
-
-		Type array_elem_type;
-
-		switch(array_type.type)	{
-		case TYPE_ARRAY:
-			FPRINTF_OR_ERR(
-				cg->output,
-				", ptr %%%zi, i64 %%%zi\n",
-				array_ssa,
-				index_ssa
-			);
-			array_elem_type	= scope->tc.types[array_type.array.base];
-			break;
-
-		case TYPE_SLICE_ABYSS:
-		case TYPE_SLICE_VAR:
-			FPRINTF_OR_ERR(
-				cg->output,
-				", ptr %%%zi, i32 0, i64 %%%zi\n",
-				array_ssa,
-				index_ssa
-			);
-			array_elem_type	= scope->tc.types[array_type.slice.base];
-			break;
-
-		default:
-			assert(0);
-			break;
-		}
-
-		gen_expr(
-			cg,
-			&expr,
-			array_elem_type,
-			temp_counter,
-			scope,
-			err
-		);
-		if(*err) goto RET;
-
-		FPUTS_OR_ERR(cg->output, "store ");
-		print_type(cg->output, &scope->tc, array_elem_type,	err);
-		if(*err) goto RET;
-		FPRINTF_OR_ERR(
-			cg->output,
-			"%%%zi,	ptr	%%%zi\n",
-			*temp_counter -	1,
-			subscript_location
-		);
-	} break;
-
-	case AST_STRUCT_ACCESS: {
-		const AstNode *parent =	&cg->nodes[lhs.struct_access.parent];
-
-		const Type parent_type = type_of_expr(
-			cg,
-			scope,
-			lhs.struct_access.parent,
-			err
-		);
-		if(*err) goto RET;
-
-		gen_expr(
-			cg,
-			parent,
-			parent_type,
-			temp_counter,
-			scope,
-			err		
-		);
-		if(*err) goto RET;
-
-		const size_t struct_location = *temp_counter - 1;
-
-		if(parent_type.type	!= TYPE_STRUCT)	{
-			fprintf(stderr,	"Expected struct Type at ");
-			lexer_print_debug_to_file(stderr, &parent->debug.debug_info);
-			fprintf(stderr,	"\n");
-			*err = ERROR_UNEXPECTED_DATA;
-			goto RET;
-		}
-
-		size_t struct_member_index = SIZE_MAX;
-		for(size_t i = 0; i	< parent_type.struct_type.member_count;	i++) {
-			if(parent_type.struct_type.member_name_ids[i]
-				== lhs.struct_access.member_id
-			) {
-				struct_member_index	= i;
-				break;
-			}
-		}
-		if(struct_member_index == SIZE_MAX)	{
-			fprintf(
-				stderr,
-				"No	Member '%s'	in struct Type at ",
-				cg->identifiers[parent->struct_access.member_id]
-			);
-			lexer_print_debug_to_file(stderr, &parent->debug.debug_info);
-			fprintf(stderr,	"\n");
-			*err = ERROR_UNEXPECTED_DATA;
-			goto RET;
-		}
-
-		const Type member_type = scope->tc.types[
-			parent_type.struct_type.member_types[struct_member_index]
-		];
-
-		const size_t member_location = *temp_counter;
-		*temp_counter += 1;
-		FPRINTF_OR_ERR(
-			cg->output,
-			"%%%zi = getelementptr inbounds ",
-			member_location
-		);
-		print_type(cg->output, &scope->tc, parent_type, err);
-		if(*err) goto RET;
-		FPRINTF_OR_ERR(
-			cg->output,
-			", ptr %%%zi, i32 %zi\n",
-			struct_location,
-			struct_member_index
-		);
-
-		gen_expr(
-			cg,
-			&expr,
-			member_type,
-			temp_counter,
-			scope,
-			err
-		);
-		if(*err) goto RET;
-
-		FPUTS_OR_ERR(cg->output, "store ");
-		print_type(cg->output, &scope->tc, member_type,	err);
-		if(*err) goto RET;
-		FPRINTF_OR_ERR(
-			cg->output,
-			"%%%zi,	ptr	%%%zi\n",
-			*temp_counter -	1,
-			member_location
-		);
-	} break;
-
-	case AST_ARROW: {
-		const AstNode *parent =	&cg->nodes[lhs.struct_access.parent];
-
-		const Type parent_type = type_of_expr(
-			cg,
-			scope,
-			lhs.struct_access.parent,
-			err
-		);
-		if(*err) goto RET;
-
-		gen_expr(
-			cg,
-			parent,
-			parent_type,
-			temp_counter,
-			scope,
-			err		
-		);
-		if(*err) goto RET;
-
-		const size_t struct_location = *temp_counter - 1;
-		if(parent_type.type != TYPE_POINTER_ABYSS
-			&& parent_type.type != TYPE_POINTER_VAR
-		) {
-			if(parent_type.type == TYPE_POINTER_CONST) {
-				fprintf(stderr, "Cannot Assign to const Pointer at ");
-				lexer_print_debug_to_file(stderr, &parent->debug.debug_info);
-				fprintf(stderr, "\n");
-				*err = ERROR_UNEXPECTED_DATA;
-				goto RET;
-			}
-			fprintf(stderr, "Expected Pointer Type at ");
-			lexer_print_debug_to_file(stderr, &parent->debug.debug_info);
-			fprintf(stderr, "\n");
-			*err = ERROR_UNEXPECTED_DATA;
-			goto RET;
-		}
-
-		const Type target_type = type_resolve(
-			&scope->tc,
-			scope->tc.types[parent_type.pointer.base]
-		);
-
-		if(target_type.type != TYPE_STRUCT) {
-			fprintf(stderr,	"Expected struct Type at ");
-			lexer_print_debug_to_file(stderr, &parent->debug.debug_info);
-			fprintf(stderr,	"\n");
-			*err = ERROR_UNEXPECTED_DATA;
-			goto RET;
-		}
-
-		size_t struct_member_index = SIZE_MAX;
-		for(size_t i = 0; i	< target_type.struct_type.member_count; i++) {
-			if(target_type.struct_type.member_name_ids[i]
-				== lhs.struct_access.member_id
-			) {
-				struct_member_index	= i;
-				break;
-			}
-		}
-		if(struct_member_index == SIZE_MAX)	{
-			fprintf(
-				stderr,
-				"No	Member '%s'	in struct Type at ",
-				cg->identifiers[parent->struct_access.member_id]
-			);
-			lexer_print_debug_to_file(stderr, &parent->debug.debug_info);
-			fprintf(stderr,	"\n");
-			*err = ERROR_UNEXPECTED_DATA;
-			goto RET;
-		}
-
-		const Type member_type = scope->tc.types[
-			target_type.struct_type.member_types[struct_member_index]
-		];
-
-		const size_t member_location = *temp_counter;
-		*temp_counter += 1;
-		FPRINTF_OR_ERR(
-			cg->output,
-			"%%%zi = getelementptr inbounds ",
-			member_location
-		);
-		print_type(cg->output, &scope->tc, target_type, err);
-		if(*err) goto RET;
-		FPRINTF_OR_ERR(
-			cg->output,
-			", ptr %%%zi, i32 0, i32 %zi\n",
-			struct_location,
-			struct_member_index
-		);
-
-		gen_expr(
-			cg,
-			&expr,
-			member_type,
-			temp_counter,
-			scope,
-			err
-		);
-		if(*err) goto RET;
-
-		FPUTS_OR_ERR(cg->output, "store ");
-		print_type(cg->output, &scope->tc, member_type,	err);
-		if(*err) goto RET;
-		FPRINTF_OR_ERR(
-			cg->output,
-			"%%%zi,	ptr	%%%zi\n",
-			*temp_counter -	1,
-			member_location
-		);
-	} break;
-
-	default:
-		fprintf(stderr,	"Illegal Left-Hand Side	to Assignment at ");
-		lexer_print_debug_to_file(stderr, &lhs.debug.debug_info);
-		fprintf(stderr,	"\n");
-		*err = ERROR_UNEXPECTED_DATA;
-		goto RET;
-	}
+	fn = gcc_jit_context_new_function(
+		cg->gcc,
+		gen_loc(cg->gcc, cg->nodes[i].debug.debug_info),
+		!imported ? GCC_JIT_FUNCTION_EXPORTED : GCC_JIT_FUNCTION_IMPORTED,
+		ret_gcc,
+		!imported ? cg->identifiers[id] : cg->strings[linkage_name],
+		arg_gccs.count,
+		arg_gccs.data,
+		false
+	);
 
 RET:
-	return;
+	if(*err) {
+		dynarr_clean(&args);
+		dynarr_clean(&arg_ids);
+		dynarr_clean(&arg_gccs);
+	}
+	if(arg_builder.str) free(arg_builder.str);
+
+	return fn;
 }
 
-static void	gen_extend_integer(
-	CodeGen	*cg,
-	size_t *ssa,
-	Type current,
-	Type needed,
-	size_t *temp_counter,
-	const Scope	*scope,
-	const DebugInfo	*debug,
-	Error *err
-)
+static gcc_jit_rvalue *gen_cast(CodeGen *cg, Expr expr, Type type, TypeContext *tc, const DebugInfo *loc, Error *err)
 {
-	if(types_are_equal(current,	needed)) return;
+	gcc_jit_rvalue *new;
 
-	if(!types_are_compatible(&scope->tc, current, needed)) {
-		fprintf(stderr,	"Operand Type '");
-		type_print(stderr, &scope->tc, current, cg->identifiers);
-		fprintf(stderr,	"' is Incompatible with	Result Type	'");
-		type_print(stderr, &scope->tc, needed, cg->identifiers);
-		fprintf(stderr,	"' at ");
-		lexer_print_debug_to_file(stderr, debug);
-		fprintf(stderr,	"\n");
-	}
-
-	switch(current.type) {
+	switch(expr.type.type) {
 	case TYPE_PRIMITIVE_U8:
 	case TYPE_PRIMITIVE_U16:
 	case TYPE_PRIMITIVE_U32:
 	case TYPE_PRIMITIVE_U64:
-		FPRINTF_OR_ERR(
-			cg->output,
-			"%%%zi = zext nneg ",
-			*temp_counter
-		);
-		print_type(cg->output, &scope->tc, current,	err);
-		if(*err) goto RET;
-		FPRINTF_OR_ERR(cg->output, " %%%zi to ", *ssa);
-		print_type(cg->output, &scope->tc, needed, err);
-		if(*err) goto RET;
-		FPUTS_OR_ERR(cg->output, "\n");
-		*ssa = *temp_counter;
-		*temp_counter += 1;
-		break;
-	
 	case TYPE_PRIMITIVE_S8:
 	case TYPE_PRIMITIVE_S16:
 	case TYPE_PRIMITIVE_S32:
 	case TYPE_PRIMITIVE_S64:
-		FPRINTF_OR_ERR(
-			cg->output,
-			"%%%zi = sext ",
-			*temp_counter
+		new = gcc_jit_context_new_cast(
+			cg->gcc,
+			gen_loc(cg->gcc, *loc),
+			expr.expr,
+			gen_type(cg, type, tc, err)
 		);
-		print_type(cg->output, &scope->tc, current,	err);
 		if(*err) goto RET;
-		FPRINTF_OR_ERR(cg->output, " %%%zi to ", *ssa);
-		print_type(cg->output, &scope->tc, needed, err);
-		if(*err) goto RET;
-		FPUTS_OR_ERR(cg->output, "\n");
-		*ssa = *temp_counter;
-		*temp_counter += 1;
+		break;
+
+	case TYPE_POINTER_CONST:
+	case TYPE_POINTER_ABYSS:
+	case TYPE_POINTER_VAR:
+		if(!types_are_compatible(tc, expr.type, type)) {
+			wyrt_diag(
+				stderr, cg->identifiers, cg->strings, tc,
+				"Cannot Cast Pointer of Type '%t' to Type '%t' at %l\n",
+				expr.type,
+				type,
+				loc
+			);
+			*err =  ERROR_UNEXPECTED_DATA;
+			goto RET;
+		}
+		if(tc->types[expr.type.pointer.base].type == TYPE_ARRAY) {
+			Type slice = (Type) {
+				.slice =  {
+					.type = TYPE_SLICE_CONST + (expr.type.type - TYPE_POINTER_CONST),
+					.base = tc->types[expr.type.pointer.base].array.base,
+				},
+			};
+
+			Type ptr_to_elem = types_get_ptr(
+				tc,
+				tc->types[slice.slice.base],
+				expr.type.type
+			);
+
+			gcc_jit_type *u64_type = gen_type(cg, (Type) {.type = TYPE_PRIMITIVE_U64}, tc, err);
+			if(*err) goto RET;
+
+			gcc_jit_rvalue *(rvalues[2]);
+			rvalues[0] = gcc_jit_context_new_cast(
+				cg->gcc,
+				gen_loc(cg->gcc, *loc),
+				expr.expr,
+			  	gen_type(cg, ptr_to_elem, tc, err)
+			);
+			if(*err) goto RET;
+
+			rvalues[1] = gcc_jit_context_new_rvalue_from_long(
+				cg->gcc, 	
+				u64_type,
+				tc->types[expr.type.pointer.base].array.len
+			);
+
+			new = gcc_jit_context_new_struct_constructor(
+				cg->gcc,
+				NULL,
+				gen_type(cg, slice, tc, err),
+				2,
+				NULL,
+				rvalues
+			);
+			goto RET;
+		}
+		new = expr.expr;
 		break;
 
 	default:
-		fprintf(stderr,	"Unable	to Extend Type '");
-		type_print(stderr, &scope->tc, current, cg->identifiers);
-		fprintf(stderr,	"' to Type '");
-		type_print(stderr, &scope->tc, needed, cg->identifiers);
-		fprintf(stderr,	"' at ");
-		lexer_print_debug_to_file(stderr, debug);
-		*err = ERROR_UNEXPECTED_DATA;
-		goto RET;
-	}
-RET:
-	return;
-}
-
-static void gen_deref(
-	CodeGen	*cg,
-	size_t index,
-	Type expected,
-	size_t *temp_counter,
-	Scope *scope,
-	Error *err
-)
-{
-	const AstNode *expr	= &cg->nodes[index];
-
-	Type ptr_type = type_of_expr(
-		cg,
-		scope,
-		expr->deref.ptr,
-		err
-	);
-	if(*err) goto RET;
-
-	gen_expr(
-		cg,
-		&cg->nodes[expr->deref.ptr],
-		(Type) {.type = TYPE_NONE},
-		temp_counter,
-		scope,
-		err
-	);
-	const size_t deref_ptr_ssa = *temp_counter - 1;
-
-	if(ptr_type.type != TYPE_POINTER_CONST
-		&& ptr_type.type != TYPE_POINTER_VAR
-	) {
-		if(ptr_type.type == TYPE_POINTER_ABYSS) {
-			fprintf(stderr,	"Attempting	to Read	from Abyssal Pointer at	");
-			lexer_print_debug_to_file(stderr, &expr->debug.debug_info);
-			fprintf(stderr,	"\n");
-			*err = ERROR_UNEXPECTED_DATA;
-			goto RET;
-		}
-		fprintf(stderr,	"Expected Pointer Type at ");
-		lexer_print_debug_to_file(stderr, &expr->debug.debug_info);
-		fprintf(stderr,	", found Type '");
-		type_print(stderr, &scope->tc, ptr_type, cg->identifiers);
-		fprintf(stderr,	"' instead.\n");
-		*err = ERROR_UNEXPECTED_DATA;
-		goto RET;
-	}
-
-	if(expected.type) {
-		if(!types_are_compatible(&scope->tc, ptr_type, expected))	{
-			fprintf(stderr,	"Cannot Cast Value of Type '");
-			type_print(stderr, &scope->tc, ptr_type, cg->identifiers);
-			fprintf(stderr,	"' to Type '");
-			type_print(stderr, &scope->tc, expected, cg->identifiers);
-			fprintf(stderr,	"' at ");
-			lexer_print_debug_to_file(stderr, &expr->debug.debug_info);
-			fprintf(stderr,	"\n");
-			*err = ERROR_UNEXPECTED_DATA;
-			goto RET;
-		}
-	}
-
-	FPRINTF_OR_ERR(cg->output, "%%%zi =	load ",	*temp_counter);
-	print_type(
-		cg->output,
-		&scope->tc,
-		scope->tc.types[ptr_type.pointer.base],
-		err
-	);
-	if(*err) goto RET;
-
-	FPRINTF_OR_ERR(cg->output, ", ptr %%%zi\n",	deref_ptr_ssa);
-	*temp_counter += 1;
-
-RET:
-	return;
-}
-
-static void gen_expr(
-	CodeGen	*cg,
-	const AstNode *expr,
-	Type expected,
-	size_t *temp_counter,
-	Scope *scope,
-	Error *err
-)
-{
-	while(expected.type == TYPE_TYPEDEF) {
-		expected = scope->tc.types[expected.typdef.backing];
-	}
-
-	switch(expr->type) {
-	case AST_IDENT:
-		do {} while(0);
-		const Var *var = find_var(scope, expr->ident.id);
-		if(!var->declared) {
-			fprintf(
-				stderr,
-				"Variable '%s' used before it is declared at ",
-				cg->identifiers[expr->ident.id]
-			);
-			lexer_print_debug_to_file(stderr, &expr->debug.debug_info);
-			fprintf(stderr,	"\n");
-			*err = ERROR_UNEXPECTED_DATA;
-			goto RET;
-		}
-		if(expected.type &&	!types_are_compatible(&scope->tc, var->type, expected)) {
-			fprintf(stderr,	"Expected Type '");
-			type_print(stderr, &scope->tc, expected, cg->identifiers);
-			fprintf(stderr,	"',	found Type '");
-			type_print(stderr, &scope->tc, var->type, cg->identifiers);
-			fprintf(stderr,	"' at ");
-			lexer_print_debug_to_file(stderr, &expr->debug.debug_info);
-			fprintf(stderr,	"\n");
-			*err = ERROR_UNEXPECTED_DATA;
-			goto RET;
-		}
-		if(var->arg) {
-			FPRINTF_OR_ERR(
-				cg->output,
-				"%%%zi = insertvalue {",
-				*temp_counter
-			);
-			*temp_counter += 1;
-			print_type(
-				cg->output,
-				&scope->tc,
-				var->type,
-				err
-			);
-			if(*err) goto RET;
-			FPUTS_OR_ERR(cg->output, "} poison, ");
-			print_type(
-				cg->output,
-				&scope->tc,
-				var->type,
-				err
-			);
-			if(*err) goto RET;
-			FPRINTF_OR_ERR(
-				cg->output,
-				" %%%s, 0\n",
-				cg->identifiers[var->id]
-			);
-
-			FPRINTF_OR_ERR(
-				cg->output,
-				"%%%zi = extractvalue {",
-				*temp_counter
-			);
-			*temp_counter += 1;
-			print_type(
-				cg->output,
-				&scope->tc,
-				var->type,
-				err
-			);
-			if(*err) goto RET;
-			FPRINTF_OR_ERR(
-				cg->output,
-				"} %%%zi, 0\n",
-				*temp_counter - 2
-			);
-		} else {
-			FPRINTF_OR_ERR(cg->output, "%%%zi =	load ",	*temp_counter);
-			*temp_counter += 1;
-			print_type(cg->output, &scope->tc, var->type, err);
-			if(*err) goto RET;
-			FPRINTF_OR_ERR(
-				cg->output,
-				", ptr %%%s\n",
-				cg->identifiers[var->id]
-			);
-		}
-		break;
-
-	case AST_INT_LIT:
-		if(!expected.type) {
-			fprintf(stderr,	"No	Destination	Type for Integer Literal at	");
-			lexer_print_debug_to_file(stderr, &expr->debug.debug_info);
-			fprintf(stderr,	"\n");
-			*err = ERROR_UNEXPECTED_DATA;
-			goto RET;
-		}
-		FPRINTF_OR_ERR(cg->output, "%%%zi = alloca ", *temp_counter);
-		*temp_counter += 1;
-		print_type(cg->output, &scope->tc, expected, err);
-		if(*err) goto RET;
-		FPUTS_OR_ERR(cg->output, "\nstore ");
-		print_type(cg->output, &scope->tc, expected, err);
-		if(*err) goto RET;
-		FPRINTF_OR_ERR(
-			cg->output,
-			" %ji, ptr %%%zi\n",
-			expr->int_lit.val,
-			*temp_counter - 1
+		wyrt_diag(
+			stderr, cg->identifiers, cg->strings, tc,
+			"Cannot Cast Value of Type '%t' to Type '%t' at %l\n",
+			expr.type,
+			type,
+			loc
 		);
-		FPRINTF_OR_ERR(cg->output, "%%%zi = load ", *temp_counter);
-		*temp_counter += 1;
-		print_type(cg->output,  &scope->tc, expected, err);
+		*err = ERROR_UNEXPECTED_DATA;
+		goto RET;
+	}
+
+RET:
+	return new;
+}	
+
+
+static Lvalue gen_lvalue(CodeGen *cg, size_t index, Scope *scope, Error *err);
+static Expr gen_fn_call(CodeGen *cg, AstNode expr, Scope *scope, Error *err);
+
+static Expr gen_expr(CodeGen *cg, Type expected, size_t index, Scope *scope, Error *err)
+{
+	AstNode expr = cg->nodes[index];
+	Expr ret;
+
+	expected = type_resolve(&scope->tc, expected);
+
+	switch(expr.type) {
+	case AST_INT_LIT:
+		if(expr.int_lit.val <= UINT8_MAX) {
+			ret.type.type = TYPE_PRIMITIVE_U8;
+		} else if(expr.int_lit.val <= UINT16_MAX) {
+			ret.type.type = TYPE_PRIMITIVE_U16;
+		} else if(expr.int_lit.val <= UINT32_MAX) {
+			ret.type.type = TYPE_PRIMITIVE_U32;
+		} else {
+			ret.type.type = TYPE_PRIMITIVE_U64;
+		}
+
+		ret.expr = gcc_jit_context_new_rvalue_from_long(
+			cg->gcc,
+			gen_type(cg, ret.type, &scope->tc, err),
+			expr.int_lit.val
+		);
 		if(*err) goto RET;
-		FPRINTF_OR_ERR(cg->output, ", ptr %%%zi\n", *temp_counter - 2);
 		break;
+
+	case AST_IDENT: {
+		for(size_t i = 0; i < scope->var_count; i++) {
+			if(scope->vars[i].id == expr.ident.id) {
+				if(!scope->vars[i].declared) {
+					wyrt_diag(
+						stderr, cg->identifiers, cg->strings, &scope->tc,
+					   "Cannot use variable '%i' before it is declared at %l\n",
+				   		expr.ident.id,
+				 		&expr.debug.debug_info
+					);		
+					*err = ERROR_UNEXPECTED_DATA;
+					goto RET;
+				}
+				ret.expr = gcc_jit_lvalue_as_rvalue(scope->gcc_vars[i]);
+				ret.type = scope->vars[i].type;
+				goto RET;
+			}
+		}
+		for(size_t i = 0; i < scope->param_count; i++) {
+			if(scope->params[i].id == expr.ident.id) {
+				ret.expr = scope->gcc_params[i];
+				ret.type = scope->params[i].type;
+				goto RET;
+			}	
+		}
+		wyrt_diag(
+			stderr, cg->identifiers, cg->strings, &scope->tc,
+			"Undeclared variable '%i' at %l\n",
+			expr.ident.id,
+			&expr.debug.debug_info
+		);
+		*err = ERROR_UNEXPECTED_DATA;
+		goto RET;
+	} break;
 
 	case AST_MUL:
 	case AST_DIV:
 	case AST_ADD:
 	case AST_SUB: {
-		if(!type_is_arithmetic(expected)) {
-			fprintf(
-				stderr,
-				"Expected Arithmetic Result from Operation at "
+		Expr lhs = gen_expr(cg, expected, expr.binop.lhs, scope, err);
+		if(*err) goto RET;
+
+		Expr rhs = gen_expr(cg, expected, expr.binop.rhs, scope, err);
+		if(*err) goto RET;
+
+		bool rhs_compatible = types_are_compatible(&scope->tc, rhs.type, lhs.type);
+		bool lhs_compatible = types_are_compatible(&scope->tc, lhs.type, rhs.type);
+
+		if(!lhs_compatible && !rhs_compatible) {
+			wyrt_diag(
+				stderr, cg->identifiers, cg->strings, &scope->tc,
+				"Canot Perform Arithmetic on Incompatible Types '%t' and '%t' at %l\n",
+				lhs.type,
+				rhs.type,
+				&expr.debug.debug_info
 			);
-			lexer_print_debug_to_file(stderr, &expr->debug.debug_info);
-			fprintf(stderr,	"\n");
 			*err = ERROR_UNEXPECTED_DATA;
 			goto RET;
 		}
 
-		const Type lhs_type = type_of_expr(
-			cg,
-			scope,
-			expr->binop.lhs,
-			err
-		);
-		if(*err) goto RET;
+		if(!type_is_arithmetic(lhs.type)) {
+			wyrt_diag(
+				stderr, cg->identifiers, cg->strings, &scope->tc,
+				"Cannot Perform Arithmetic on non-arithmetic Type '%t' at %l\n",
+				lhs.type,
+				&expr.debug.debug_info
+			);
+			*err = ERROR_UNEXPECTED_DATA;
+			goto RET;
+		}
 
-		gen_expr(
-			cg,
-			&cg->nodes[expr->binop.lhs],
-			expected,
-			temp_counter,
-			scope,
-			err
-		);
-		if(*err) goto RET;
-		size_t lhs_ssa = *temp_counter - 1;
+		if(!type_is_arithmetic(rhs.type)) {
+			wyrt_diag(
+				stderr, cg->identifiers, cg->strings, &scope->tc,
+				"Cannot Perform Arithmetic on non-arithmetic Type '%t' at %l\n",
+				rhs.type,
+				&expr.debug.debug_info
+			);
+			*err = ERROR_UNEXPECTED_DATA;
+			goto RET;
+		}
 
-		const Type rhs_type = type_of_expr(
-			cg,
-			scope,
-			expr->binop.rhs,
-			err
-		);
-		if(*err) goto RET;
-
-		gen_expr(
-			cg,
-			&cg->nodes[expr->binop.rhs],
-			expected,
-			temp_counter,
-			scope,
-			err
-		);
-		if(*err) goto RET;
-		size_t rhs_ssa = *temp_counter - 1;
-
-		Type needed;
-		if(expected.type) {
-			needed = expected;
+		if(rhs_compatible) {
+			ret.type = lhs.type;
+			rhs.expr = gcc_jit_context_new_cast(
+				cg->gcc,
+				gen_loc(cg->gcc, expr.debug.debug_info),
+				rhs.expr,
+				gen_type(cg, lhs.type, &scope->tc, err)
+			);
+			if(*err) goto RET;
 		} else {
-			if(types_are_compatible(&scope->tc, lhs_type, rhs_type)) {
-				needed = rhs_type;
-			} else if(types_are_compatible(&scope->tc, rhs_type, lhs_type))	{
-				needed = lhs_type;
-			} else {
-				fprintf(
-					stderr,
-					"Attempting	to Perform Arithmetic on "
-					"Non-Compatible	Types '"
-				);
-				type_print(stderr, &scope->tc, lhs_type, cg->identifiers);
-				fprintf(stderr,	"' and '");
-				type_print(stderr, &scope->tc, rhs_type, cg->identifiers);
-				fprintf(stderr,	"' at ");
-				lexer_print_debug_to_file(
-					stderr,
-					&expr->debug.debug_info
-				);
-				fprintf(stderr,	"\n");
-				*err = ERROR_UNEXPECTED_DATA;
-				goto RET;
-			}
+			ret.type = rhs.type;
+			lhs.expr = gcc_jit_context_new_cast(
+				cg->gcc,
+				gen_loc(cg->gcc, expr.debug.debug_info),
+				lhs.expr,
+				gen_type(cg, rhs.type, &scope->tc, err)
+			);
 		}
 
-		gen_extend_integer(
-			cg,
-			&lhs_ssa,
-			lhs_type,
-			expected,
-			temp_counter,
-			scope,
-			&expr->debug.debug_info,
-			err
-		);
-		if(*err) goto RET;
 
-		gen_extend_integer(
-			cg,
-			&rhs_ssa,
-			rhs_type,
-			expected,
-			temp_counter,
-			scope,
-			&expr->debug.debug_info,
-			err
-		);
-		if(*err) goto RET;
-
-		FPRINTF_OR_ERR(cg->output, "%%%zi =	", *temp_counter);
-		switch(expr->type) {
-		case AST_MUL:
-			FPUTS_OR_ERR(cg->output, "mul ");
-			break;
-		case AST_DIV:
-			if(type_is_unsigned(lhs_type)) {
-				FPUTS_OR_ERR(cg->output, "udiv ");
-			} else {
-				FPUTS_OR_ERR(cg->output, "sdiv ");
-			}
-			break;
-		case AST_ADD:
-			FPUTS_OR_ERR(cg->output, "add ");
-			break;
-		case AST_SUB:
-			FPUTS_OR_ERR(cg->output, "sub ");
-			break;
-		default:
-			assert(0);
-			break;
+		enum gcc_jit_binary_op op;
+		switch(expr.type) {
+		case AST_MUL: op = GCC_JIT_BINARY_OP_MULT; break;
+		case AST_DIV: op = GCC_JIT_BINARY_OP_DIVIDE; break;
+		case AST_ADD: op = GCC_JIT_BINARY_OP_PLUS; break;
+		case AST_SUB: op = GCC_JIT_BINARY_OP_MINUS; break;
+		default: assert(0);
 		}
-		print_type(cg->output, &scope->tc, lhs_type, err);
+
+		ret.expr = gcc_jit_context_new_binary_op(
+			cg->gcc,
+			gen_loc(cg->gcc, expr.debug.debug_info),
+			op,
+			gen_type(cg, ret.type, &scope->tc, err),
+			lhs.expr,
+			rhs.expr
+		);
 		if(*err) goto RET;
-		FPRINTF_OR_ERR(cg->output, " %%%zi, %%%zi\n", lhs_ssa, rhs_ssa);
-		*temp_counter += 1;
 	} break;
 
 	case AST_FN_CALL:
-		gen_fn_call(cg,	expr, expected,	temp_counter, scope, err);
+		ret = gen_fn_call(cg, expr, scope, err);
+		if(*err) goto RET;
 		break;
 
 	case AST_DEREF: {
-		Type ptr_type = type_of_expr(
-			cg,
-			scope,
-			expr->deref.ptr,
-			err
-		);
+		Type ptr_type = types_get_ptr(&scope->tc, expected, TYPE_POINTER_CONST);
+		Expr ptr = gen_expr(cg, ptr_type, expr.deref.ptr, scope, err);
 		if(*err) goto RET;
-
-		gen_expr(
-			cg,
-			&cg->nodes[expr->deref.ptr],
-			ptr_type,
-			temp_counter,
-			scope,
-			err
-		);
-		if(*err) goto RET;
-		const size_t deref_ptr_ssa = *temp_counter - 1;
-
-		if(ptr_type.type != TYPE_POINTER_CONST
-			&& ptr_type.type != TYPE_POINTER_VAR
-		) {
-			if(ptr_type.type == TYPE_POINTER_ABYSS) {
-				fprintf(stderr,	"Attempting	to Read	from Abyssal Pointer at	");
-				lexer_print_debug_to_file(stderr, &expr->debug.debug_info);
-				fprintf(stderr,	"\n");
-				*err = ERROR_UNEXPECTED_DATA;
-				goto RET;
-			}
-			fprintf(stderr,	"Expected Pointer Type at ");
-			lexer_print_debug_to_file(stderr, &expr->debug.debug_info);
-			fprintf(stderr,	", found Type '");
-			type_print(stderr, &scope->tc, ptr_type, cg->identifiers);
-			fprintf(stderr,	"' instead.\n");
-			*err = ERROR_UNEXPECTED_DATA;
-			goto RET;
-		}
-
-		Type base = scope->tc.types[ptr_type.pointer.base];
-
-		if(expected.type) {
-			if(!types_are_compatible(&scope->tc, base, expected)) {
-				fprintf(stderr,	"Cannot	Cast Value of Type '");
-				type_print(stderr, &scope->tc, ptr_type, cg->identifiers);
-				fprintf(stderr,	"' to Type '");
-				type_print(stderr, &scope->tc, expected, cg->identifiers);
-				fprintf(stderr,	"' at ");
-				lexer_print_debug_to_file(stderr, &expr->debug.debug_info);
-				fprintf(stderr,	"\n");
-				*err = ERROR_UNEXPECTED_DATA;
-				goto RET;
-			}
-		}
-
-		FPRINTF_OR_ERR(cg->output, "%%%zi =	load ",	*temp_counter);
-		print_type(cg->output, &scope->tc, base, err);
-		if(*err) goto RET;
-		FPRINTF_OR_ERR(cg->output, ", ptr %%%zi\n",	deref_ptr_ssa);
-		*temp_counter += 1;
+		
+		ret.expr = gcc_jit_lvalue_as_rvalue(gcc_jit_rvalue_dereference(
+				ptr.expr,
+				gen_loc(cg->gcc, expr.debug.debug_info)
+		));
+		ret.type = expected;
 	} break;
-
+	
 	case AST_ADDR: {
-		const AstNode addr_obj	= cg->nodes[expr->addr.base];
-
-		Type ptr_type;
-
-		switch(addr_obj.type) {
-		case AST_IDENT: {
-			size_t ident_index = SIZE_MAX;
-			for(size_t i = 0; i	< scope->var_count;	i++) {
-				if(scope->vars[i].id ==	addr_obj.ident.id) {
-					ident_index	= i;
-					break;
-				}
-			}
-
-			if(ident_index == SIZE_MAX)	{
-				fprintf(
-					stderr,
-					"Attempting	to take	Address	of Undeclared Variable '%s'"
-					" at ",
-					cg->identifiers[addr_obj.ident.id]
-				);
-				lexer_print_debug_to_file(stderr, &expr->debug.debug_info);
-				fprintf(
-					stderr,
-					"\n(Note: You cannot take the Address of a Parameter)\n"
-				);
-				*err = ERROR_UNEXPECTED_DATA;
-				goto RET;
-			}
-
-			if(!scope->vars[ident_index].declared) {
-				fprintf(
-					stderr,
-					"Attempting	to take	Address	of Variable	'%s' at	",
-					cg->identifiers[addr_obj.ident.id]
-				);
-				lexer_print_debug_to_file(stderr, &expr->debug.debug_info);
-				fprintf(stderr,	" before it	is declared.");
-				*err = ERROR_UNEXPECTED_DATA;
-				goto RET;
-			}
-
-			size_t ident_type_index = SIZE_MAX;
-			for(size_t i = 0; i	< scope->tc.count; i++)	{
-				if(types_are_equal(
-					scope->vars[ident_index].type,
-					scope->tc.types[i]
-				)) {
-					ident_type_index = i;
-					break;
-				}
-			}
-			if(ident_type_index == SIZE_MAX) {
-				ident_type_index = types_register(
-					&scope->tc,
-					scope->vars[ident_index].type,
-					err
-				);
-				if(*err) goto RET;
-			}
-			ptr_type = (Type) {
-				.pointer = {
-					.type =	scope->vars[ident_index].mut
-						? TYPE_POINTER_VAR : TYPE_POINTER_CONST,
-					.base =	ident_type_index,
-				},
-			};
-
-			if(expected.type) {
-				if(!types_are_compatible(&scope->tc, ptr_type, expected)){
-					fprintf(stderr,	"Cannot Coerce Pointer of Type '");
-					type_print(stderr, &scope->tc, ptr_type, cg->identifiers);
-					fprintf(stderr,	"' to Type '");
-					type_print(stderr, &scope->tc, expected, cg->identifiers);
-					fprintf(stderr,	"' at ");
-					lexer_print_debug_to_file(stderr, &expr->debug.debug_info);
-					fprintf(stderr, "\n");
-					*err = ERROR_UNEXPECTED_DATA;
-					goto RET;
-				}
-			}
-
-
-			FPRINTF_OR_ERR(
-				cg->output,
-				"%%%zi = getelementptr ",
-				*temp_counter
-			);
-			*temp_counter += 1;
-			print_type(
-				cg->output,
-				&scope->tc,
-				scope->vars[ident_index].type,
-				err
-			);
-			if(*err) goto RET;
-
-			FPRINTF_OR_ERR(
-				cg->output,
-				", ptr %%%s, i32 0\n",
-				cg->identifiers[addr_obj.ident.id]
-			);
-		} break;
-
-		case AST_SUBSCRIPT: {
-			Type arr_type = type_of_expr(
-				cg,
-				scope,
-				addr_obj.subscript.arr,
-				err
-			);
-			if(*err) goto RET;
-
-			Type elem_type = scope->tc.types[arr_type.slice.base];
-
-			gen_expr(
-				cg,
-				&cg->nodes[addr_obj.subscript.index],
-				(Type) {.type = TYPE_PRIMITIVE_U64},
-				temp_counter,
-				scope,
-				err
-			);
-			if(*err) goto RET;
-			size_t index_ssa = *temp_counter - 1;
-
-			switch(arr_type.type) {
-			case TYPE_ARRAY:
-				gen_expr(
-					cg,
-					&(AstNode) {
-						.addr = {
-							.type = AST_ADDR,
-							.debug_info = expr->debug.debug_info,
-							.base = addr_obj.subscript.arr,
-						},
-					},
-					(Type) {.type = TYPE_NONE},
-					temp_counter,
-					scope,
-					err
-				);
-				if(*err) goto RET;
-				break;
-
-			case TYPE_SLICE_CONST:
-			case TYPE_SLICE_VAR:
-			case TYPE_SLICE_ABYSS:
-				gen_expr(
-					cg,
-					&cg->nodes[addr_obj.subscript.arr],
-					arr_type,
-					temp_counter,
-					scope,
-					err
-				);
-				if(*err) goto RET;
-
-				FPRINTF_OR_ERR(
-					cg->output,
-					"%%%zi = extractvalue {ptr, i64} %%%zi, 0\n",
-					*temp_counter, *temp_counter - 1
-				);
-				*temp_counter += 1;
-				break;
-
-			default:
-				fprintf(stderr, "Cannot Subscript non-array Type '");
-				type_print(stderr, &scope->tc, arr_type, cg->identifiers);
-				fprintf(stderr, "' at ");
-				lexer_print_debug_to_file(stderr, &expr->debug.debug_info);
-				fprintf(stderr, "\n");
-				*err = ERROR_UNEXPECTED_DATA;
-				goto RET;
-			}
-
-			FPRINTF_OR_ERR(
-				cg->output,
-				"%%%zi = getelementptr ",
-				*temp_counter
-			);
-			*temp_counter += 1;
-			print_type(cg->output, &scope->tc, elem_type, err);
-			if(*err) goto RET;
-			FPRINTF_OR_ERR(
-				cg->output,
-				", ptr %%%zi, i64 %%%zi\n",
-				*temp_counter - 2,
-				index_ssa
-			);
-
-			TypeType subs_ptr_access;
-			switch(arr_type.type) {
-			case TYPE_SLICE_CONST:
-				subs_ptr_access = TYPE_POINTER_CONST;
-				break;
-			case TYPE_SLICE_VAR:
-				subs_ptr_access = TYPE_POINTER_VAR;
-				break;
-			case TYPE_SLICE_ABYSS:
-				subs_ptr_access = TYPE_POINTER_ABYSS;
-				break;
-			case TYPE_ARRAY: {
-				AstNode parent = cg->nodes[addr_obj.subscript.arr];
-				bool seeking = true;
-				while(seeking) {
-					switch(parent.type) {
-					case AST_IDENT: {
-						Var *ident = find_var(scope, parent.ident.id);
-						subs_ptr_access = ident->mut
-							? TYPE_POINTER_VAR
-							: TYPE_POINTER_CONST;
-						seeking = false;
-					} break;
-					case AST_STRUCT_ACCESS: {
-						Type struct_type = type_of_expr(
-							cg,
-							scope,
-							parent.struct_access.parent,
-							err
-						);
-						if(*err) goto RET;
-
-						Type member_type = {.type = TYPE_NONE};
-						for(
-							size_t i = 0;
-							i < struct_type.struct_type.member_count;
-							i++
-						) {
-							if(struct_type.struct_type.member_name_ids[i]
-								== parent.struct_access.member_id
-							) {
-								member_type = scope->tc.types[
-									struct_type.struct_type.member_types[i]
-								];
-								break;
-							}
-						}
-						if(member_type.type == TYPE_NONE) {
-							fprintf(
-								stderr,
-								"No Member '%s' in Type at ",
-								cg->identifiers[parent.struct_access.member_id]
-							);
-							lexer_print_debug_to_file(
-								stderr,
-								&parent.debug.debug_info
-							);
-							fprintf(stderr, "\n");
-							*err = ERROR_UNEXPECTED_DATA;
-							goto RET;
-						}
-
-						switch(member_type.type) {
-						case TYPE_POINTER_CONST:
-						case TYPE_POINTER_ABYSS:
-						case TYPE_POINTER_VAR:
-							subs_ptr_access = member_type.type;
-							seeking = false;
-							break;
-						case TYPE_SLICE_CONST:
-							subs_ptr_access = TYPE_POINTER_CONST;
-							seeking = false;
-							break;
-						case TYPE_SLICE_ABYSS:
-							subs_ptr_access = TYPE_POINTER_ABYSS;
-							seeking = false;
-							break;
-						case TYPE_SLICE_VAR:
-							subs_ptr_access = TYPE_POINTER_VAR;
-							seeking = false;
-							break;
-						default:
-							parent = cg->nodes[parent.struct_access.parent];
-							break;
-						}
-					} break;
-					case AST_DEREF: {
-						parent = cg->nodes[parent.deref.ptr];
-					} break;
-					case AST_SUBSCRIPT: {
-						parent = cg->nodes[parent.subscript.arr];
-					} break;
-					case AST_FN_CALL: {
-						for(size_t i = 0; i < cg->fn_sig_count; i++) {
-							if(cg->fn_sigs[i].id == parent.fn_call.fn_id) {
-								switch(cg->fn_sigs[i].ret.type) {
-								case TYPE_POINTER_CONST:
-									subs_ptr_access = TYPE_POINTER_CONST;
-									break;
-								case TYPE_POINTER_ABYSS:
-									subs_ptr_access = TYPE_POINTER_ABYSS;
-									break;
-								case TYPE_POINTER_VAR:
-									subs_ptr_access = TYPE_POINTER_VAR;
-									break;
-								case TYPE_SLICE_CONST:
-									subs_ptr_access = TYPE_POINTER_CONST;
-									break;
-								case TYPE_SLICE_ABYSS:
-									subs_ptr_access = TYPE_POINTER_ABYSS;
-									break;
-								case TYPE_SLICE_VAR:
-									subs_ptr_access = TYPE_POINTER_VAR;
-									break;
-								default:
-									subs_ptr_access = TYPE_POINTER_CONST;
-									break;
-								}
-								seeking = false;
-								break;
-							}
-						}
-						// fn exists because we were able to generate it before
-					} break;
-					default:
-						subs_ptr_access = TYPE_POINTER_CONST;
-						seeking = false;
-						break;
-					}
-				}
-			} break;
-
-			default:
-				assert(0);
-				break;
-			}
-
-			ptr_type = (Type) {
-				.pointer = {
-					.type = subs_ptr_access,
-					.base = arr_type.slice.base,
-				},
-			};
-
-			if(expected.type) {
-				if(!types_are_compatible(&scope->tc, ptr_type, expected)){
-					fprintf(stderr,	"Cannot	Coerce Pointer of Type '");
-					type_print(stderr, &scope->tc, ptr_type, cg->identifiers);
-					fprintf(stderr,	"' to Type '");
-					type_print(stderr, &scope->tc, expected, cg->identifiers);
-					fprintf(stderr,	"' at ");
-					lexer_print_debug_to_file(stderr, &expr->debug.debug_info);
-					*err = ERROR_UNEXPECTED_DATA;
-					goto RET;
-				}
-			}
-		} break;
-
-		case AST_STRUCT_ACCESS:
-		case AST_ARROW: {
-			Type struct_type = type_of_expr(
-				cg,
-				scope,
-				expr->struct_access.parent,
-				err
-			);
-			if(*err) goto RET;
-
-			if(expr->type == AST_ARROW) {
-				if(struct_type.type != TYPE_POINTER_CONST
-					&& struct_type.type != TYPE_POINTER_ABYSS
-					&& struct_type.type != TYPE_POINTER_VAR
-				) {
-					fprintf(stderr, "Expected struct Type at ");
-					lexer_print_debug_to_file(stderr, &expr->debug.debug_info);
-					fprintf(stderr, "\n");
-					*err = ERROR_UNEXPECTED_DATA;
-					goto RET;
-				}
-				struct_type = type_resolve(&scope->tc, scope->tc.types[struct_type.pointer.base]);
-			} else {
-				if(struct_type.type != TYPE_STRUCT) {
-					fprintf(stderr, "Expected struct Type at ");
-					lexer_print_debug_to_file(stderr, &expr->debug.debug_info);
-					fprintf(stderr, "\n");
-					*err = ERROR_UNEXPECTED_DATA;
-					goto RET;
-				}
-			}
-
-			gen_expr(
-				cg,
-				&cg->nodes[expr->struct_access.parent],
-				(Type) {.type = TYPE_NONE},
-				temp_counter,
-				scope,
-				err
-			);
-			if(*err) goto RET;
-			const size_t struct_ssa = *temp_counter - 1;
-
-			size_t struct_member_index = SIZE_MAX;
-			for(size_t i = 0; i < struct_type.struct_type.member_count; i++) {
-				if(struct_type.struct_type.member_name_ids[i]
-					== expr->struct_access.member_id
-				) {
-					struct_member_index = i;
-					break;
-				}
-			}
-
-			if(struct_member_index == SIZE_MAX) {
-				fprintf(
-					stderr,
-					"No Member '%s' in Struct Type at ",
-					cg->identifiers[expr->struct_access.member_id]
-				);
-				lexer_print_debug_to_file(stderr, &expr->debug.debug_info);
-				fprintf(stderr, "\n");
-				*err = ERROR_UNEXPECTED_DATA;
-				goto RET;
-			}
-
-
-			FPRINTF_OR_ERR(
-				cg->output,
-				"%%%zi = getelementptr ",
-				*temp_counter
-			);
-			*temp_counter += 1;
-			print_type(cg->output, &scope->tc, struct_type, err);
-			if(expr->type == AST_ARROW) {
-				FPRINTF_OR_ERR(
-					cg->output,
-					", ptr %%%zi, i32 0, i32 %zi\n",
-					struct_ssa,
-					struct_member_index
-				);
-			} else {
-				FPRINTF_OR_ERR(
-					cg->output,
-					", ptr %%%zi, i32 %zi\n",
-					struct_ssa,
-					struct_member_index
-				);
-			}
-
-			bool seeking = true;
-			TypeType ptr_access;
-			while(seeking) {
-				AstNode parent = cg->nodes[expr->struct_access.parent];
-				switch(parent.type) {
-					case AST_IDENT: {
-						Var *ident = find_var(scope, parent.ident.id);
-						ptr_access = ident->mut
-							? TYPE_POINTER_VAR
-							: TYPE_POINTER_CONST;
-						seeking = false;
-					} break;
-					case AST_STRUCT_ACCESS: {
-						Type struct_type = type_of_expr(
-							cg,
-							scope,
-							parent.struct_access.parent,
-							err
-						);
-						if(*err) goto RET;
-
-						Type member_type = {.type = TYPE_NONE};
-						for(
-							size_t i = 0;
-							i < struct_type.struct_type.member_count;
-							i++
-						) {
-							if(struct_type.struct_type.member_name_ids[i]
-								== parent.struct_access.member_id
-							) {
-								member_type = scope->tc.types[
-									struct_type.struct_type.member_types[i]
-								];
-								break;
-							}
-						}
-						if(member_type.type == TYPE_NONE) {
-							fprintf(
-								stderr,
-								"No Member '%s' in Type at ",
-								cg->identifiers[parent.struct_access.member_id]
-							);
-							lexer_print_debug_to_file(
-								stderr,
-								&parent.debug.debug_info
-							);
-							fprintf(stderr, "\n");
-							*err = ERROR_UNEXPECTED_DATA;
-							goto RET;
-						}
-
-						switch(member_type.type) {
-						case TYPE_POINTER_CONST:
-						case TYPE_POINTER_ABYSS:
-						case TYPE_POINTER_VAR:
-							ptr_access = member_type.type;
-							seeking = false;
-							break;
-						case TYPE_SLICE_CONST:
-							ptr_access = TYPE_POINTER_CONST;
-							seeking = false;
-							break;
-						case TYPE_SLICE_ABYSS:
-							ptr_access = TYPE_POINTER_ABYSS;
-							seeking = false;
-							break;
-						case TYPE_SLICE_VAR:
-							ptr_access = TYPE_POINTER_VAR;
-							seeking = false;
-							break;
-						default:
-							parent = cg->nodes[parent.struct_access.parent];
-							break;
-						}
-					} break;
-					case AST_DEREF: {
-						parent = cg->nodes[parent.deref.ptr];
-					} break;
-					case AST_SUBSCRIPT: {
-						parent = cg->nodes[parent.subscript.arr];
-					} break;
-					case AST_FN_CALL: {
-						for(size_t i = 0; i < cg->fn_sig_count; i++) {
-							if(cg->fn_sigs[i].id == parent.fn_call.fn_id) {
-								switch(cg->fn_sigs[i].ret.type) {
-								case TYPE_POINTER_CONST:
-									ptr_access = TYPE_POINTER_CONST;
-									break;
-								case TYPE_POINTER_ABYSS:
-									ptr_access = TYPE_POINTER_ABYSS;
-									break;
-								case TYPE_POINTER_VAR:
-									ptr_access = TYPE_POINTER_VAR;
-									break;
-								case TYPE_SLICE_CONST:
-									ptr_access = TYPE_POINTER_CONST;
-									break;
-								case TYPE_SLICE_ABYSS:
-									ptr_access = TYPE_POINTER_ABYSS;
-									break;
-								case TYPE_SLICE_VAR:
-									ptr_access = TYPE_POINTER_VAR;
-									break;
-								default:
-									ptr_access = TYPE_POINTER_CONST;
-									break;
-								}
-								seeking = false;
-								break;
-							}
-						}
-						// fn exists because we were able to generate it before
-					} break;
-				default:
-					ptr_access = TYPE_POINTER_CONST;
-					seeking = false;
-					break;
-				}
-			}
-			ptr_type = (Type) {
-				.pointer = {
-					.type = ptr_access,
-					.base = struct_type.struct_type
-						.member_types[struct_member_index],
-				},
-			};
-
-			if(expected.type) {
-				if(!types_are_compatible(&scope->tc, ptr_type, expected)){
-					fprintf(stderr,	"Cannot	Coerce Pointer of Type '");
-					type_print(stderr, &scope->tc, ptr_type, cg->identifiers);
-					fprintf(stderr,	"' to Type '");
-					type_print(stderr, &scope->tc, expected, cg->identifiers);
-					fprintf(stderr,	"' at ");
-					lexer_print_debug_to_file(stderr, &expr->debug.debug_info);
-					*err = ERROR_UNEXPECTED_DATA;
-					goto RET;
-				}
-			}
-		} break;
-		default:
-			fprintf(stderr,	"Cannot	take Address of	Value at ");
-			lexer_print_debug_to_file(stderr, &expr->debug.debug_info);
-			fprintf(stderr,	"\n");
-			*err = ERROR_UNEXPECTED_DATA;
-			goto RET;
-		}
-
-		if(
-			expected.type == TYPE_SLICE_CONST
-			|| expected.type == TYPE_SLICE_ABYSS
-			|| expected.type == TYPE_SLICE_VAR
-		) {
-			FPRINTF_OR_ERR(
-				cg->output,
-				"%%%zi = insertvalue {ptr, i64} poison, ptr %%%zi, 0\n",
-				*temp_counter,
-				*temp_counter - 1
-			);
-			*temp_counter += 1;
-
-			FPRINTF_OR_ERR(
-				cg->output,
-				"%%%zi = insertvalue {ptr, i64} %%%zi, i64 ",
-				*temp_counter,
-				*temp_counter - 1
-			);
-
-			if(scope->tc.types[ptr_type.pointer.base].type == TYPE_ARRAY) {
-				FPRINTF_OR_ERR(
-					cg->output,
-					"%ji",
-					scope->tc.types[ptr_type.pointer.base].array.len
-				);
-			} else {
-				FPUTS_OR_ERR(cg->output, "1");
-			}
-
-			FPUTS_OR_ERR(cg->output, ", 1\n");
-			*temp_counter += 1;
-		}
-	} break;
-
-	case AST_SUBSCRIPT: {
-		Type arr_type = type_of_expr(
-			cg,
-			scope,
-			expr->subscript.arr,
-			err
-		);
+		Lvalue val = gen_lvalue(cg, expr.addr.base, scope, err);
 		if(*err) goto RET;
 
-		gen_expr(
-			cg,
-			&cg->nodes[expr->subscript.arr],
-			arr_type,
-			temp_counter,
-			scope,
-			err
-		);
-		if(*err) goto RET;
-		const size_t arr_ssa = *temp_counter - 1;
-
-		gen_expr(
-			cg,
-			&cg->nodes[expr->subscript.index],
-			(Type) {.type = TYPE_PRIMITIVE_U64},
-			temp_counter,
-			scope,
-			err
-		);
-		if(*err) goto RET;
-		const size_t index_ssa = *temp_counter - 1;
-
-		FPRINTF_OR_ERR(
-			cg->output,
-			"%%%zi = extractvalue ",
-			*temp_counter
-		);
-		*temp_counter += 1;
-		print_type(cg->output, &scope->tc, arr_type, err);
-		if(*err) goto RET;
-		FPRINTF_OR_ERR(cg->output, " %%%zi, 0\n", arr_ssa);
-		FPRINTF_OR_ERR(
-			cg->output,
-			"%%%zi = getelementptr inbounds ",
-			*temp_counter
-		);
-		*temp_counter += 1;
-		Type elem_type = scope->tc.types[arr_type.array.base];
-		print_type(cg->output, &scope->tc, elem_type, err);
-		if(*err) goto RET;
-		FPRINTF_OR_ERR(
-			cg->output,
-			", ptr %%%zi, i64 %%%zi\n",
-			*temp_counter - 2,
-			index_ssa
+		ret.expr = gcc_jit_lvalue_get_address(
+			val.lvalue,
+			gen_loc(cg->gcc, expr.debug.debug_info)
 		);
 
-		FPRINTF_OR_ERR(cg->output, "%%%zi = load ", *temp_counter);
-		*temp_counter += 1;
-		print_type(cg->output, &scope->tc, elem_type, err);
-		if(*err) goto RET;
-		FPRINTF_OR_ERR(cg->output, ", ptr %%%zi\n", *temp_counter - 2);
+		ret.type = types_get_ptr(
+			&scope->tc,
+			val.type,
+			val.read ? (val.mut ? TYPE_POINTER_VAR : TYPE_POINTER_CONST) : TYPE_POINTER_ABYSS
+		);
 	} break;
 
 	case AST_ARRAY_LIT: {
-		Type elem_type = type_of_expr(
-			cg,
-			scope,
-			expr->array_lit.elems[0],
-			err
-		);
-		if(*err) goto RET;
-
-		size_t *elem_ssas = malloc(
-			expr->array_lit.elem_count * sizeof(size_t)
-		);
-		CHECK_MALLOC(elem_ssas);
-
-		for(size_t i = 0; i < expr->array_lit.elem_count; i++) {
-			gen_expr(
-				cg,
-				&cg->nodes[expr->array_lit.elems[i]],
-				elem_type,
-				temp_counter,
-				scope,
-				err
+		if(expected.type != TYPE_ARRAY) {
+			wyrt_diag(
+				stderr, cg->identifiers, cg->strings, &scope->tc,
+				"Cannot Coerce Array Literal to non-Array Type '%t' at %l\n",
+				expected,
+				&expr.debug.debug_info
 			);
-			if(*err) {
-				free(elem_ssas);
-			}
-			elem_ssas[i] = *temp_counter - 1;
+			*err = ERROR_UNEXPECTED_DATA;
+			goto RET;
 		}
-
-		for(size_t i = 0; i < expr->array_lit.elem_count; i++) {
-			if(!fprintf(
-				cg->output,
-				"%%%zi = insertvalue [%ji x ",
-				*temp_counter,
-				expr->array_lit.elem_count
-			)) {
-				free(elem_ssas);
-				fprintf(stderr, "Unable to Write to IR File\n");
-				*err = ERROR_IO;
-				goto RET;
-			}
-			*temp_counter += 1;
-
-			print_type(cg->output, &scope->tc, elem_type, err);
-			if(*err) {
-				free(elem_ssas);
-				goto RET;
-			}
-
-			if(i) {
-				if(!fprintf(cg->output, "] %%%zi, ", *temp_counter - 2)) {
-					free(elem_ssas);
-					fprintf(stderr, "Unable to Write to IR File\n");
-					*err = ERROR_IO;
-					goto RET;
-				}
-			} else {
-				if(!fprintf(cg->output, "] poison, ")) {
-					free(elem_ssas);
-					fprintf(stderr, "Unable to Write to IR File\n");
-					*err = ERROR_IO;
-					goto RET;
-				}
-			}
-
-			print_type(cg->output, &scope->tc, elem_type, err);
-			if(*err) {
-				free(elem_ssas);
-				goto RET;
-			}
-
-			if(!fprintf(cg->output, " %%%zi, %zi\n", elem_ssas[i], i)) {
-				free(elem_ssas);
-				fprintf(stderr, "Unable to Write to IR File\n");
-				*err = ERROR_IO;
-				goto RET;
-			}
-		}
-		free(elem_ssas);
-	} break;
-
-	case AST_STRUCT_LIT: {
-		if(expected.type != TYPE_STRUCT) {
-			fprintf(
-				stderr,
-				"Cannot Coerce struct Literal to non-struct Type at "
+		if(expected.array.len && expected.array.len != expr.array_lit.elem_count) {
+			wyrt_diag(
+				stderr, cg->identifiers, cg->strings, &scope->tc,
+				"Cannot Coerce Array Literal of Length %z to Array of Length %z at %l\n",
+				expr.array_lit.elem_count,
+				expected.array.len,
+				&expr.debug.debug_info
 			);
-			lexer_print_debug_to_file(stderr, &expr->debug.debug_info);
-			fprintf(stderr, "\n");
 			*err = ERROR_UNEXPECTED_DATA;
 			goto RET;
 		}
 
-		size_t *elem_ssas = malloc(
-			expr->struct_lit.member_count * sizeof*elem_ssas
-		);
-		CHECK_MALLOC(elem_ssas);
+		Type elem_type = scope->tc.types[expected.array.base];
 
-		for(size_t i = 0; i < expr->struct_lit.member_count; i++) {
-			size_t elem_index = SIZE_MAX;
-			for(size_t j = 0; j < expected.struct_type.member_count; j++) {
-				if(expected.struct_type.member_name_ids[j]
-					== expr->struct_lit.member_name_ids[i]
-				) {
-					elem_index = j;
+		gcc_jit_rvalue **elems = malloc(sizeof(*elems) * expr.array_lit.elem_count);
+		CHECK_MALLOC(elems);
+
+		for(size_t i = 0; i < expr.array_lit.elem_count; i++) {
+			elems[i] = gen_expr(
+				cg,
+				elem_type,
+				expr.array_lit.elems[i],
+				scope,
+				err
+			).expr;
+			if(*err) goto ARRAY_LIT_CLEAN;
+		}
+
+		ret.expr = gcc_jit_context_new_array_constructor(
+			cg->gcc,
+			gen_loc(cg->gcc, expr.debug.debug_info),
+			gen_type(cg, expected, &scope->tc, err),
+			expected.array.len,
+			elems
+		);
+		ret.type = (Type) {
+			.array = {
+				.type = TYPE_ARRAY,
+				.base = expected.array.base,
+			   	.len = expr.array_lit.elem_count	
+			},
+		};
+
+ARRAY_LIT_CLEAN:
+		free(elems);
+		goto RET;
+	} break;
+
+	case AST_SUBSCRIPT: {
+		Expr arr = gen_expr(
+			cg,
+			(Type) {.type = TYPE_NONE},
+			expr.subscript.arr,
+			scope,
+			err
+		);
+		if(*err) goto RET;
+		if(!type_is_subscriptable(&scope->tc, arr.type)) {
+			wyrt_diag(
+				stderr, cg->identifiers, cg->strings, &scope->tc,
+				"Cannot Subscript non-Subscriptable Type '%t' at %l\n",
+				arr.type,
+				&expr.debug.debug_info
+			);
+			*err = ERROR_UNEXPECTED_DATA;
+			goto RET;
+		}
+		if(arr.type.type == TYPE_SLICE_ABYSS
+			|| arr.type.type == TYPE_POINTER_ABYSS
+		) {
+			wyrt_diag(
+				stderr, cg->identifiers, cg->strings, &scope->tc,
+				"Cannot Read Data from abyssal Pointer at %l\n",
+				&expr.debug.debug_info
+			);
+			*err = ERROR_UNEXPECTED_DATA;
+			goto RET;
+		}
+
+		Expr index = gen_expr(
+			cg,
+			(Type) {.type = TYPE_PRIMITIVE_U64},
+			expr.subscript.index,
+			scope,
+			err
+		);
+		if(*err) goto RET;
+
+		gcc_jit_rvalue *ptr = arr.expr;
+		gcc_jit_location *loc = gen_loc(cg->gcc, expr.debug.debug_info);
+
+		if(arr.type.type == TYPE_SLICE_CONST
+			|| arr.type.type == TYPE_SLICE_VAR
+		) {
+			gcc_jit_type *slice_gcc = get_named_type(cg, arr.type, &scope->tc, err);
+			if(*err) goto RET;
+
+			gcc_jit_struct *slice_struct = gcc_jit_type_is_struct(slice_gcc);
+
+			ptr = gcc_jit_rvalue_access_field(
+				arr.expr,
+				loc,
+				gcc_jit_struct_get_field(slice_struct, 0)
+			);
+		}
+
+		ret.expr = gcc_jit_lvalue_as_rvalue(gcc_jit_context_new_array_access(
+			cg->gcc,
+			loc,
+			ptr,
+			index.expr
+		));
+
+		ret.type = scope->tc.types[arr.type.pointer.base];
+	} break;
+
+	case AST_STRUCT_LIT: {
+		if(!expected.type) {
+			wyrt_diag(
+				stderr, cg->identifiers, cg->strings, &scope->tc,
+				"Cannot Instantiate Anonymous struct Literal without any Destination Type at %l\n",
+				&expr.debug.debug_info
+			);
+			*err = ERROR_UNEXPECTED_DATA;
+			goto RET;
+		}
+		if(expected.type != TYPE_STRUCT) {
+			wyrt_diag(
+				stderr, cg->identifiers, cg->strings, &scope->tc,
+				"Cannot Coerce Struct-Literal to non-struct Type '%t' at %l\n",
+				expected,
+				&expr.debug.debug_info
+			);
+			*err = ERROR_UNEXPECTED_DATA;
+			goto RET;
+		}
+
+		gcc_jit_rvalue **members = malloc(sizeof(*members) * expected.struct_type.member_count);
+		CHECK_MALLOC(members);
+		gcc_jit_field **fields = malloc(sizeof(*fields) * expected.struct_type.member_count);
+		if(!fields) {
+			fprintf(stderr, "OOM!\n");
+			free(members);
+			*err = ERROR_OUT_OF_MEMORY;
+			goto RET;
+		}
+
+		gcc_jit_type *type = gen_type(
+			cg,
+			expected,
+			&scope->tc,
+			err
+		);
+		if(*err) {
+			free(members);
+			free(fields);
+			goto RET;
+		}
+
+		gcc_jit_struct *struct_gcc = gcc_jit_type_is_struct(type);
+		assert(struct_gcc);
+
+		for(size_t i = 0; i < expected.struct_type.member_count; i++) {
+			members[i] = gen_expr(
+				cg,
+				scope->tc.types[expected.struct_type.member_types[i]],
+				expr.struct_lit.member_values[i],
+				scope,
+				err
+			).expr;
+			if(*err) {
+				free(members);
+				free(fields);
+				goto RET;
+			}
+
+			fields[i] = gcc_jit_struct_get_field(struct_gcc, i);
+		}
+
+		ret.expr = gcc_jit_context_new_struct_constructor(
+			cg->gcc,
+			gen_loc(cg->gcc, expr.debug.debug_info),
+			type,
+			expected.struct_type.member_count,
+			fields,
+			members
+		);
+
+		ret.type = expected;
+
+		free(members);
+	} break;
+
+	case AST_STRUCT_ACCESS: {
+		Expr parent = gen_expr(
+			cg,
+			(Type) {.type = TYPE_NONE},
+			expr.struct_access.parent,
+			scope,
+			err
+		);
+		if(*err) goto RET;
+		if(parent.type.type != TYPE_STRUCT) {
+			wyrt_diag(
+				stderr, cg->identifiers, cg->strings, &scope->tc,
+				"Cannot Access Member of non-struct Type '%t' at %l\n",
+				parent,
+				&expr.debug.debug_info
+			);
+			*err = ERROR_UNEXPECTED_DATA;
+			goto RET;
+		}
+
+		gcc_jit_type *parent_type = gen_type(
+			cg,
+			parent.type,
+			&scope->tc,
+			err
+		);
+		if(*err) goto RET;
+
+		gcc_jit_struct *struct_gcc = gcc_jit_type_is_struct(parent_type);
+		assert(struct_gcc);
+
+		gcc_jit_field *field = NULL;
+		for(size_t i = 0; i < parent.type.struct_type.member_count; i++) {
+			if(parent.type.struct_type.member_name_ids[i] == expr.struct_access.member_id) {
+				field = gcc_jit_struct_get_field(struct_gcc, i);
+				ret.type = scope->tc.types[parent.type.struct_type.member_types[i]];
+			}
+		}
+		if(!field) {
+			wyrt_diag(
+				stderr, cg->identifiers, cg->strings, &scope->tc,
+				"No Members '%i' in struct '%t' at %l\n",
+				expr.struct_access.member_id,
+				parent.type,
+				&expr.debug.debug_info
+			);
+			*err = ERROR_UNEXPECTED_DATA;
+			goto RET;
+		}
+
+		ret.expr = gcc_jit_rvalue_access_field(
+			parent.expr,
+			gen_loc(cg->gcc, expr.debug.debug_info),
+			field
+		);
+
+	} break;
+
+	case AST_STRING_LIT:
+	case AST_ZSTRING_LIT: {
+		ret.type = types_get_ptr(&scope->tc, (Type) {.type = TYPE_PRIMITIVE_U8}, TYPE_POINTER_CONST);
+		ret.type.type = TYPE_SLICE_CONST;
+
+		gcc_jit_type *slice = gen_type(cg, ret.type, &scope->tc, err);
+		if(*err) goto RET;
+
+		gcc_jit_struct *struct_gcc = gcc_jit_type_is_struct(slice);
+		assert(struct_gcc);
+
+		gcc_jit_rvalue *(vals[2]);
+		vals[0] = gcc_jit_context_new_string_literal(
+			cg->gcc,
+			cg->strings[expr.string_lit.id]
+		);
+
+		vals[1] = gcc_jit_context_new_rvalue_from_long(
+			cg->gcc,
+			gcc_jit_context_get_type(cg->gcc, GCC_JIT_TYPE_UINT64_T),
+			strlen(cg->strings[expr.string_lit.id])
+		);
+
+		gcc_jit_field *(fields[2]) = {
+			gcc_jit_struct_get_field(struct_gcc, 0),
+			gcc_jit_struct_get_field(struct_gcc, 1),
+		};
+
+		ret.expr = gcc_jit_context_new_struct_constructor(
+			cg->gcc,
+			gen_loc(cg->gcc, expr.debug.debug_info),
+			slice,
+			2,
+			fields,
+			vals
+		);
+	} break;
+
+	case AST_CSTRING_LIT: {
+		ret.type = types_get_ptr(&scope->tc, (Type) {.type = TYPE_PRIMITIVE_U8}, TYPE_POINTER_CONST);
+
+		gcc_jit_type *type = gen_type(cg, ret.type, &scope->tc, err);
+		if(*err) goto RET;
+
+		gcc_jit_rvalue *str = gcc_jit_context_new_string_literal(
+			cg->gcc,
+			cg->strings[expr.string_lit.id]
+		);
+		
+		ret.expr = gcc_jit_context_new_cast(
+			cg->gcc,
+			gen_loc(cg->gcc, expr.debug.debug_info),
+			str,
+			type
+		);
+	} break;
+
+	case AST_ARROW: {
+		Expr parent = gen_expr(
+			cg,
+			(Type) {.type = TYPE_NONE},
+			expr.struct_access.parent,
+			scope,
+			err
+		);
+		if(*err) goto RET;
+		if(parent.type.type != TYPE_POINTER_CONST
+			&& parent.type.type != TYPE_POINTER_ABYSS
+			&& parent.type.type != TYPE_POINTER_VAR
+		) {
+			wyrt_diag(
+				stderr, cg->identifiers, cg->strings, &scope->tc,
+				"Cannot Dereference non-pointer Type '%t' at %l\n",
+				parent.type,
+				&expr.debug.debug_info
+			);
+			*err = ERROR_UNEXPECTED_DATA;
+			goto RET;
+		}
+
+		Type parent_struct = scope->tc.types[parent.type.pointer.base];
+		parent_struct = type_resolve(&scope->tc, parent_struct);
+
+		if(parent_struct.type != TYPE_STRUCT) {
+			wyrt_diag(
+				stderr, cg->identifiers, cg->strings, &scope->tc,
+				"Cannot Access Member of non-struct Type '%t' at %l\n",
+				parent_struct,
+				&expr.debug.debug_info
+			);
+			*err = ERROR_UNEXPECTED_DATA;
+			goto RET;
+		}
+
+		gcc_jit_type *parent_type = gen_type(
+			cg,
+			parent_struct,
+			&scope->tc,
+			err
+		);
+		if(*err) goto RET;
+
+		gcc_jit_struct *struct_gcc = gcc_jit_type_is_struct(parent_type);
+		assert(struct_gcc);
+
+		gcc_jit_field *field = NULL;
+		for(size_t i = 0; i < parent_struct.struct_type.member_count; i++) {
+			if(parent_struct.struct_type.member_name_ids[i] == expr.struct_access.member_id) {
+				field = gcc_jit_struct_get_field(struct_gcc, i);
+				ret.type = scope->tc.types[parent_struct.struct_type.member_types[i]];
+			}
+		}
+		if(!field) {
+			wyrt_diag(
+				stderr, cg->identifiers, cg->strings, &scope->tc,
+				"No Members '%i' in struct '%t' at %l\n",
+				expr.struct_access.member_id,
+				parent.type,
+				&expr.debug.debug_info
+			);
+			*err = ERROR_UNEXPECTED_DATA;
+			goto RET;
+		}
+
+		ret.expr = gcc_jit_lvalue_as_rvalue(gcc_jit_rvalue_dereference_field(
+			parent.expr,
+			gen_loc(cg->gcc, expr.debug.debug_info),
+			field
+		));
+	} break;
+
+	default:
+		wyrt_diag(
+			stderr, cg->identifiers, cg->strings, &scope->tc,
+			"Expected Expression at %l\n",
+			&expr.debug.debug_info
+		);
+		*err = ERROR_UNEXPECTED_DATA;
+		goto RET;
+	}
+
+
+RET:
+	if(!*err) {
+		types_register_nexist(&scope->tc, ret.type, err);
+		if(*err) goto RET_FAIL;
+		if(expected.type && !types_are_compatible(&scope->tc, ret.type, expected)) {
+			wyrt_diag(
+				stderr, cg->identifiers, cg->strings, &scope->tc,
+				"Cannot Coerce between Expression Type '%t' and Expected '%t' at %l\n",
+				ret.type,
+				expected,
+				&expr.debug.debug_info
+			);
+			*err = ERROR_UNEXPECTED_DATA;
+			goto RET_FAIL;
+		} else if(expected.type && !types_are_equal(ret.type, expected)) {
+			ret.expr = gen_cast(cg, ret, expected, &scope->tc, &expr.debug.debug_info, err);
+			ret.type = expected;
+		}
+
+		ret.type = type_resolve(&scope->tc, ret.type);
+	}
+RET_FAIL:
+	return ret;
+}
+
+static Expr gen_fn_call(CodeGen *cg, AstNode expr, Scope *scope, Error *err)
+{
+	Expr ret;
+	gcc_jit_rvalue **args = NULL;
+
+	bool found = false;
+	FnSig sig;
+	gcc_jit_function *fn;
+	for(size_t i = 0; i < cg->fn_count; i++) {
+		if(cg->fn_sigs[i].id == expr.fn_call.fn_id) {
+			found = true;
+			sig = cg->fn_sigs[i];
+			fn = cg->fns[i]; 
+			break;
+		}
+	}
+	if(!found) {
+		wyrt_diag(
+			stderr, cg->identifiers, NULL, NULL,
+			"No Function '%i' at %l\n",
+			expr.fn_call.fn_id,
+			&expr.debug.debug_info
+		);
+		*err = ERROR_UNEXPECTED_DATA;
+		goto RET;
+	}
+	
+	if(expr.fn_call.arg_count != sig.arg_count) {
+		wyrt_diag(
+			stderr, cg->identifiers, cg->strings, &scope->tc,
+			"Expected %z arguments to function call, found %z at %l\n",
+			sig.arg_count,
+			expr.fn_call.arg_count,
+			&expr.debug.debug_info
+		);
+		*err = ERROR_UNEXPECTED_DATA;
+		goto RET;	
+	}
+
+	args = malloc(gcc_jit_function_get_param_count(fn) * sizeof(gcc_jit_rvalue*));
+	CHECK_MALLOC(args);
+
+	int additional = 0;
+	for(size_t i = 0; i < sig.arg_count; i++) {
+		Expr arg = gen_expr(cg, sig.args[i], expr.fn_call.args[i], scope, err);
+		if(*err) goto RET;
+		if(arg.type.type == TYPE_SLICE_CONST
+			|| arg.type.type == TYPE_SLICE_ABYSS
+			|| arg.type.type == TYPE_SLICE_VAR
+		) {
+			additional += 1;
+
+			gcc_jit_location *loc = gen_loc(
+				cg->gcc,
+				cg->nodes[expr.fn_call.args[i]].debug.debug_info
+			);
+
+			gcc_jit_type *slice_type = get_named_type(cg, arg.type, &scope->tc, err);
+			if(*err) goto RET;
+
+			gcc_jit_struct *slice_struct = gcc_jit_type_is_struct(slice_type);
+
+			gcc_jit_field *ptr = gcc_jit_struct_get_field(slice_struct, 0);
+			gcc_jit_field *len = gcc_jit_struct_get_field(slice_struct, 1);
+
+			args[i+additional-1] = gcc_jit_rvalue_access_field(
+				arg.expr,
+				loc,
+				ptr
+			);
+
+			args[i+additional] = gcc_jit_rvalue_access_field(
+				arg.expr,
+				loc,
+				len
+			);
+		} else {
+			args[i+additional] = arg.expr;
+		}
+	}
+
+	ret.expr = gcc_jit_context_new_call(
+		cg->gcc,
+		gen_loc(cg->gcc, expr.debug.debug_info),
+		fn,
+		sig.arg_count+additional,
+		args
+	);
+	ret.type = sig.ret;
+
+RET:
+	if(args) free(args);
+	return ret;
+}
+
+static gcc_jit_lvalue *gen_var_decl(
+	CodeGen *cg,
+	const AstNode *statement,
+	gcc_jit_function *fn,
+	Var *var,
+	Scope *scope,
+	Error *err
+)
+{
+	gcc_jit_lvalue *gcc_var = NULL;
+
+	Type type = type_from_ast(&scope->tc, cg->nodes, statement->var_decl.data_type, err);
+	if(*err) goto RET;
+
+	if(type.type == TYPE_ARRAY) {
+		if(type.array.len == 0) {
+			if(!statement->var_decl.initial) {
+				wyrt_diag(
+					stderr, cg->identifiers, cg->strings, &scope->tc,
+					"Cannot Infer Length of Array '%i' when no Initializer is present at %l\n",
+					statement->var_decl.id,
+					&statement->debug.debug_info
+				);
+				*err = ERROR_UNEXPECTED_DATA;
+				goto RET;
+			}
+
+			if(cg->nodes[statement->var_decl.initial].type != AST_ARRAY_LIT) {
+				wyrt_diag(
+					stderr, cg->identifiers, cg->strings, &scope->tc,
+					"Cannot Initialize Array '%i' with Value that is not an array literal at %l\n",
+					statement->var_decl.id,
+					&statement->debug.debug_info
+				);
+				*err = ERROR_UNEXPECTED_DATA;
+				goto RET;
+			}
+
+			type.array.len = cg->nodes[statement->var_decl.initial].array_lit.elem_count;
+		}
+	}
+
+	gcc_jit_type *gcc_type = gen_type(cg, type, &scope->tc, err);
+	if(*err) goto RET;
+
+	*var = (Var) {
+		.id = statement->var_decl.id,
+		.type = type,
+		.mut = statement->var_decl.mut,
+		.declared = false,
+	};
+
+	gcc_var = gcc_jit_function_new_local(
+		fn,
+		gen_loc(cg->gcc, statement->debug.debug_info),
+		gcc_type,
+		cg->identifiers[statement->var_decl.id]
+	);
+
+
+RET:
+	return gcc_var;
+}
+
+static Lvalue gen_lvalue(CodeGen *cg, size_t index, Scope *scope, Error *err)
+{
+	Lvalue ret = { 0 };
+	AstNode var = cg->nodes[index];
+
+	switch(var.type) {
+	case AST_IDENT: {
+		for(size_t i = 0; i < scope->var_count; i++) {
+			if(scope->vars[i].id == var.ident.id) {
+				if(!scope->vars[i].declared) {
+					wyrt_diag(
+						stderr, cg->identifiers, cg->strings, &scope->tc,
+						"Cannot Assign to Variable '%i' at %l before it is Declared!\n",
+						var.ident.id,
+						&var.debug.debug_info
+					);
+					*err = ERROR_UNEXPECTED_DATA;
+					goto RET;
+				}
+
+				ret.type = scope->vars[i].type;
+				ret.lvalue = scope->gcc_vars[i];
+				ret.mut = scope->vars[i].mut;
+				ret.read = true;
+				goto RET;
+			}
+		}
+
+		wyrt_diag(
+			stderr, cg->identifiers, cg->strings, &scope->tc,
+			"Cannot Assign to Undeclared Variable '%i' at %l\n",
+			var.ident.id,
+			&var.debug.debug_info
+		);
+		*err = ERROR_UNEXPECTED_DATA;
+		goto RET;
+	} break;	
+
+	case AST_DEREF: {
+		Expr ptr = gen_expr(cg, (Type) {.type = TYPE_NONE}, var.deref.ptr, scope, err);
+		if(*err) goto RET;
+
+		if(ptr.type.type != TYPE_POINTER_ABYSS
+			&& ptr.type.type != TYPE_POINTER_VAR
+		) {
+			wyrt_diag(
+				stderr, cg->identifiers, cg->strings, &scope->tc,
+				"Cannot Dereference non-Pointer Type '%t' at %l\n",
+				ptr.type,
+				&var.debug.debug_info
+			);
+			*err = ERROR_UNEXPECTED_DATA;
+			goto RET;
+		}
+
+		ret.lvalue = gcc_jit_rvalue_dereference(ptr.expr, gen_loc(cg->gcc, var.debug.debug_info));
+		ret.type = scope->tc.types[ptr.type.pointer.base];
+		ret.mut = !(ptr.type.type == TYPE_POINTER_CONST);
+		ret.read = !(ptr.type.type == TYPE_POINTER_ABYSS);
+	} break;
+
+	case AST_STRUCT_ACCESS: {
+		Lvalue parent = gen_lvalue(
+			cg,
+			var.struct_access.parent,
+			scope,
+			err
+		);
+		if(*err) goto RET;	
+
+		if(parent.type.type != TYPE_STRUCT) {
+			wyrt_diag(
+				stderr, cg->identifiers, cg->strings, &scope->tc,
+				"Cannot Access Member in non-struct Type '%t' at %l\n",
+				parent.type,
+				&var.debug.debug_info
+			);
+			*err = ERROR_UNEXPECTED_DATA;
+			goto RET;
+		}
+
+		gcc_jit_type *parent_type = gen_type(
+			cg,
+			parent.type,
+			&scope->tc,
+			err
+		);
+		if(*err) goto RET;
+
+		gcc_jit_struct *struct_gcc = gcc_jit_type_is_struct(parent_type);
+		assert(struct_gcc);
+
+		gcc_jit_field *field = NULL;
+		for(size_t i = 0; i < parent.type.struct_type.member_count; i++) {
+			if(parent.type.struct_type.member_name_ids[i] == var.struct_access.member_id) {
+				field = gcc_jit_struct_get_field(struct_gcc, i);
+				ret.type = scope->tc.types[parent.type.struct_type.member_types[i]];
+			}
+		}
+
+		if(!field) {
+			wyrt_diag(
+				stderr, cg->identifiers, cg->strings, &scope->tc,
+				"No Member '%i' in struct '%t' at %l\n",
+				var.struct_access.member_id,
+				parent.type,
+				&var.debug.debug_info
+			);
+			*err = ERROR_UNEXPECTED_DATA;
+			goto RET;
+		}
+
+		ret.lvalue = gcc_jit_lvalue_access_field(
+			parent.lvalue,
+			gen_loc(cg->gcc, var.debug.debug_info),
+			field
+		);
+		ret.mut = parent.mut;
+		ret.read = parent.read;
+	} break;
+
+	case AST_SUBSCRIPT: {
+		Expr arr = gen_expr(
+			cg,
+			(Type) {.type = TYPE_NONE},
+			var.subscript.arr,
+			scope,
+			err
+		);
+		if(*err) goto RET;
+
+		if(!type_is_subscriptable(&scope->tc, arr.type)) {
+			wyrt_diag(
+				stderr, cg->identifiers, cg->strings, &scope->tc,
+				"Cannot subscript non-Subscriptable Type '%t' at %l\n",
+				arr.type,
+				&var.debug.debug_info
+			);
+			*err = ERROR_UNEXPECTED_DATA;
+			goto RET;
+		}
+
+		Expr index = gen_expr(
+			cg,
+			(Type) {.type = TYPE_PRIMITIVE_U64},
+			var.subscript.index,
+			scope,
+			err
+		);
+		if(*err) goto RET;
+
+		gcc_jit_rvalue *arr_gcc = arr.expr;
+		if(arr.type.type == TYPE_SLICE_CONST
+			|| arr.type.type == TYPE_SLICE_ABYSS
+			|| arr.type.type == TYPE_SLICE_VAR
+		) {
+			gcc_jit_type *slice_gcc = gen_type(
+				cg,
+				arr.type,
+				&scope->tc,
+				err
+			);
+			if(*err) goto RET;
+
+			gcc_jit_struct *struct_gcc = gcc_jit_type_is_struct(slice_gcc);
+			assert(struct_gcc);
+
+			gcc_jit_field *ptr = gcc_jit_struct_get_field(struct_gcc, 0);
+
+			arr_gcc = gcc_jit_rvalue_access_field(
+				arr.expr,
+				gen_loc(cg->gcc, var.debug.debug_info),
+				ptr
+			);
+		}
+
+		ret.lvalue = gcc_jit_context_new_array_access(
+			cg->gcc,
+			gen_loc(cg->gcc, var.debug.debug_info),
+			arr_gcc,
+			index.expr
+		);
+		switch(arr.type.type) {
+		case TYPE_POINTER_CONST:
+		case TYPE_SLICE_CONST:
+			ret.mut = false;
+			ret.read = true;
+			break;
+		case TYPE_POINTER_ABYSS:
+		case TYPE_SLICE_ABYSS:
+			ret.mut = true;
+			ret.read = false;
+			break;
+		case TYPE_POINTER_VAR:
+		case TYPE_SLICE_VAR:
+			ret.mut = true;
+			ret.read = true;
+			break;
+		case TYPE_ARRAY: {
+			Lvalue lval = gen_lvalue(cg, var.subscript.arr, scope, err);
+			if(*err) goto RET;
+			ret.mut = lval.mut;
+			ret.read = lval.read;
+		} break;
+		default: assert(0);
+		}
+		ret.type = scope->tc.types[arr.type.pointer.base];
+	} break;
+
+	case AST_ARROW: {
+		Expr parent = gen_expr(
+			cg,
+			(Type) {.type = TYPE_NONE},
+			var.struct_access.parent,
+			scope,
+			err
+		);
+		if(*err) goto RET;	
+
+		if(parent.type.type != TYPE_POINTER_CONST
+			&& parent.type.type != TYPE_POINTER_ABYSS
+			&& parent.type.type != TYPE_POINTER_VAR
+		) {
+			wyrt_diag(
+				stderr, cg->identifiers, cg->strings, &scope->tc,
+				"Cannot Dereference non-pointer Type '%t' at %l\n",
+				parent.type,
+				&var.debug.debug_info
+			);
+			*err = ERROR_UNEXPECTED_DATA;
+			goto RET;
+		}
+
+		Type parent_struct = scope->tc.types[parent.type.pointer.base];
+
+		parent_struct = type_resolve(&scope->tc, parent_struct);
+
+		if(parent_struct.type != TYPE_STRUCT) {
+			wyrt_diag(
+				stderr, cg->identifiers, cg->strings, &scope->tc,
+				"Cannot Access Member in non-struct Type '%t' at %l\n",
+				parent_struct,
+				&var.debug.debug_info
+			);
+			*err = ERROR_UNEXPECTED_DATA;
+			goto RET;
+		}
+
+		gcc_jit_type *parent_type = gen_type(
+			cg,
+			parent_struct,
+			&scope->tc,
+			err
+		);
+		if(*err) goto RET;
+
+		gcc_jit_struct *struct_gcc = gcc_jit_type_is_struct(parent_type);
+		assert(struct_gcc);
+
+		gcc_jit_field *field = NULL;
+		for(size_t i = 0; i < parent_struct.struct_type.member_count; i++) {
+			if(parent_struct.struct_type.member_name_ids[i] == var.struct_access.member_id) {
+				field = gcc_jit_struct_get_field(struct_gcc, i);
+				ret.type = scope->tc.types[parent_struct.struct_type.member_types[i]];
+			}
+		}
+
+		if(!field) {
+			wyrt_diag(
+				stderr, cg->identifiers, cg->strings, &scope->tc,
+				"No Member '%i' in struct '%t' at %l\n",
+				var.struct_access.member_id,
+				parent_struct,
+				&var.debug.debug_info
+			);
+			*err = ERROR_UNEXPECTED_DATA;
+			goto RET;
+		}
+
+		ret.lvalue = gcc_jit_rvalue_dereference_field(
+			parent.expr,
+			gen_loc(cg->gcc, var.debug.debug_info),
+			field
+		);
+		ret.mut = !(parent.type.type == TYPE_POINTER_CONST);
+		ret.read = !(parent.type.type == TYPE_POINTER_ABYSS);
+	} break;
+	
+	default:
+		wyrt_diag(
+			stderr, cg->identifiers, cg->strings, &scope->tc,
+			"Expected Lvalue at %l\n",
+			&var.debug.debug_info
+		);
+		*err = ERROR_UNEXPECTED_DATA;
+		goto RET;
+		break;	
+	}
+
+RET:
+	if(!*err) {
+		types_register_nexist(&scope->tc, ret.type, err);
+		if(*err) goto RET_FAIL;
+	}
+RET_FAIL:
+	return ret;
+}
+
+static void gen_fn(CodeGen *cg, FnSig sig, size_t index, gcc_jit_function *fn, const Scope *global, Error *err)
+{
+	const AstNode def = cg->nodes[index];
+	assert(def.type == AST_FN_DEF);
+	
+	const AstNode block = cg->nodes[def.fn_def.block];
+	if(block.type == AST_EXTERN) return;
+	
+	DynArr gcc_vars;
+	DynArr vars;
+	dynarr_init(&gcc_vars, sizeof(gcc_jit_lvalue*));
+	dynarr_init(&vars, sizeof(Var));
+
+	Scope scope;
+	scope_init(&scope, global, err);
+	if(*err) goto RET;
+
+	//TODO: SLICE ARGUMENTS
+	scope.gcc_params = malloc(sig.arg_count * sizeof(gcc_jit_rvalue*));	
+	CHECK_MALLOC(scope.gcc_params);
+	scope.params = malloc(sig.arg_count * sizeof(Var));
+	CHECK_MALLOC(scope.params);
+	scope.param_count = sig.arg_count;
+
+	assert(block.type == AST_BLOCK);
+
+	size_t additional = 0;
+	for(size_t i = 0; i < sig.arg_count; i++) {
+		if(sig.args[i].type == TYPE_SLICE_CONST
+			|| sig.args[i].type == TYPE_SLICE_ABYSS
+			|| sig.args[i].type == TYPE_SLICE_VAR
+		) {
+			gcc_jit_rvalue *(values[2]);
+			
+			values[0] = gcc_jit_param_as_rvalue(
+				gcc_jit_function_get_param(fn, i+additional)
+			);	
+
+			values[1] = gcc_jit_param_as_rvalue(
+				gcc_jit_function_get_param(fn, i+additional+1)
+			);
+
+			gcc_jit_type *slice_gcc = gen_type(cg, sig.args[i], &scope.tc, err);
+			if(*err) goto RET;
+
+			gcc_jit_struct *slice_struct = gcc_jit_type_is_struct(slice_gcc);
+			gcc_jit_field *(fields[2]);
+			fields[0] = gcc_jit_struct_get_field(slice_struct, 0);
+			fields[1] = gcc_jit_struct_get_field(slice_struct, 1);
+
+			scope.gcc_params[i] = gcc_jit_context_new_struct_constructor(
+				cg->gcc,
+				gen_loc(cg->gcc, def.debug.debug_info),
+				slice_gcc,
+				2,
+				fields,
+				values
+			);
+
+			additional += 1;
+		} else {
+			scope.gcc_params[i] = gcc_jit_param_as_rvalue(
+				gcc_jit_function_get_param(fn, i)
+			);	
+		}
+
+		scope.params[i] = (Var) {
+			.id = sig.arg_ids[i],
+			.type = sig.args[i],
+			.mut = false,
+			.declared = true,
+		};
+	}
+
+	for(size_t i = 0; i < block.block.statement_count; i++) {
+		const AstNode statement = cg->nodes[block.block.statements[i]];
+
+		if(statement.type == AST_VAR_DECL) {
+			Var var;
+			gcc_jit_lvalue *gcc_var = gen_var_decl(cg, &statement, fn, &var, &scope, err);
+			if(*err) {
+				dynarr_clean(&vars);
+				dynarr_clean(&gcc_vars);
+				goto RET;
+			}
+
+			dynarr_push(&gcc_vars, &gcc_var, err);
+			if(*err) {
+				dynarr_clean(&vars);
+				dynarr_clean(&gcc_vars);
+				goto RET;
+			}
+
+			dynarr_push(&vars, &var, err);
+			if(*err) {
+				dynarr_clean(&vars);
+				dynarr_clean(&gcc_vars);
+				goto RET;
+			}
+		}
+	}
+
+	scope.gcc_vars = gcc_vars.data;
+	scope.vars = vars.data;
+	scope.var_count = vars.count;
+
+	gcc_jit_block *gcc_block = gcc_jit_function_new_block(fn, ".entry");
+
+	size_t varnum = 0;
+	bool returned = false;
+	for(size_t i = 0; i < block.block.statement_count; i++) {
+		const AstNode statement = cg->nodes[block.block.statements[i]];
+
+		switch(statement.type) {
+		case AST_DISCARD: {
+			Expr expr = gen_expr(
+				cg,
+				(Type) {.type = TYPE_NONE},
+				statement.discard.value,
+				&scope,
+				err
+			);
+			if(*err) goto RET;
+						
+			gcc_jit_block_add_eval(
+				gcc_block,
+				gen_loc(cg->gcc, statement.debug.debug_info),
+				expr.expr
+			);
+		} break;
+
+		case AST_FN_CALL: {
+			bool found = false;
+			for(size_t i = 0; i < cg->fn_count; i++) {
+				if(cg->fn_sigs[i].id == statement.fn_call.fn_id) {
+					if(cg->fn_sigs[i].ret.type != TYPE_PRIMITIVE_VOID) {
+						wyrt_diag(
+							stderr, cg->identifiers, cg->strings, &scope.tc,
+							"Cannot implicitly discard return value of function '%i' at %l, "
+							"Consider using the 'discard' keyword\n",
+							statement.fn_call.fn_id,
+							&statement.debug.debug_info
+						);
+						*err = ERROR_UNEXPECTED_DATA;
+						goto RET;
+					}
+					Expr val = gen_fn_call(cg, statement, &scope, err);
+					if(*err) goto RET;
+					gcc_jit_block_add_eval(
+						gcc_block,
+						gen_loc(cg->gcc, statement.debug.debug_info),
+						val.expr
+					);
+					found = true;
 					break;
 				}
 			}
 
-			if(elem_index == SIZE_MAX) {
-				fprintf(
-					stderr,
-					"Struct Literal has Member '%s', "
-					"but expected type does not at ",
-					cg->identifiers[expr->struct_lit.member_name_ids[i]]
+			if(found) break;
+
+			wyrt_diag(
+				stderr, cg->identifiers, cg->strings, &scope.tc,
+				"Undeclared Function '%i' at %l\n",
+				statement.fn_call.fn_id,
+				&statement.debug.debug_info
+			);
+			*err = ERROR_UNEXPECTED_DATA;
+			goto RET;
+		} break;
+
+		case AST_VAR_DECL: {
+			if(statement.var_decl.initial) {
+				Expr expr = gen_expr(
+					cg,
+					scope.vars[i].type,
+					statement.var_decl.initial,
+					&scope,
+					err
 				);
-				lexer_print_debug_to_file(stderr, &expr->debug.debug_info);
-				fprintf(stderr, "\n");
-				free(elem_ssas);
+				if(*err) goto RET;
+
+				gcc_jit_block_add_assignment(
+					gcc_block,
+					gen_loc(cg->gcc, statement.debug.debug_info),
+					scope.gcc_vars[i],
+					expr.expr
+				);
+			} else {
+				if(!scope.vars[varnum].mut) {
+					fprintf(stderr, "Error: const Variable uninitialized at ");
+					lexer_print_debug_to_file(stderr, &statement.debug.debug_info);
+					fprintf(stderr, "\n");
+					*err = ERROR_UNDEFINED; // Prevent malformed program
+					goto RET;
+				}
+			}
+			scope.vars[varnum].declared = true;
+			varnum += 1;
+		} break;
+		case AST_ASSIGN: {
+			Lvalue lhs = gen_lvalue(
+				cg,
+				statement.assign.var,
+				&scope,
+				err
+			);
+			if(*err) goto RET;
+
+			if(!lhs.mut) {
+				wyrt_diag(
+					stderr, cg->identifiers, cg->strings, &scope.tc,
+					"Cannot assign to const value at %l\n",
+					&statement.debug.debug_info
+				);
 				*err = ERROR_UNEXPECTED_DATA;
 				goto RET;
 			}
-			gen_expr(
+
+			Expr rhs = gen_expr(
 				cg,
-				&cg->nodes[expr->struct_lit.member_values[elem_index]],
-				scope->tc.types[expected.struct_type.member_types[elem_index]],
-				temp_counter,
-				scope,
-				err
-			);
-			if(*err) {
-				free(elem_ssas);
-				goto RET;
-			}
-
-			elem_ssas[elem_index] = *temp_counter - 1;
-		}
-
-		int io_error = 0;
-		for(size_t i = 0; i < expected.struct_type.member_count; i++) {
-			io_error += fprintf(
-				cg->output,
-				"%%%zi = insertvalue ",
-				*temp_counter
-			) < 0;
-			*temp_counter += 1;
-
-			print_type(cg->output, &scope->tc, expected, err);
-			*err += io_error;
-			if(i) {
-				io_error += fprintf(
-					cg->output,
-					" %%%zi, ",
-					*temp_counter - 2
-				) < 0;
-			} else {
-				io_error += fputs(" poison, ", cg->output) < 0;
-			}
-
-			print_type(
-				cg->output,
-				&scope->tc,
-				scope->tc.types[expected.struct_type.member_types[i]],
-				err
-			);
-			io_error += *err;
-
-			io_error += fprintf(
-				cg->output,
-				" %%%zi, %zi\n",
-				elem_ssas[i],
-				i
-			) < 0;
-		}
-
-		if(io_error) {
-			fprintf(stderr, "Could Not Write to Output File!\n");
-			free(elem_ssas);
-			*err = ERROR_UNEXPECTED_DATA;
-			goto RET;
-		}
-
-		free(elem_ssas);
-	} break;
-
-	case AST_STRUCT_ACCESS: {
-		Type parent_type = type_of_expr(
-			cg,
-			scope,
-			expr->struct_access.parent,
-			err
-		);
-		if(*err) goto RET;
-
-		if(parent_type.type != TYPE_STRUCT) {
-			fprintf(
-				stderr,
-				"No Member '%s' in non-struct Type at ",
-				cg->identifiers[expr->struct_access.member_id]
-			);
-			lexer_print_debug_to_file(stderr, &expr->debug.debug_info);
-			fprintf(stderr, "\n");
-			*err = ERROR_UNEXPECTED_DATA;
-			goto RET;
-		}
-
-		gen_expr(
-			cg,
-			&cg->nodes[expr->struct_access.parent],
-			parent_type,
-			temp_counter,
-			scope,
-			err
-		);
-		if(*err) goto RET;
-
-		size_t parent_ssa = *temp_counter - 1;
-
-		size_t elem_index = SIZE_MAX;
-		for(size_t i = 0; i < parent_type.struct_type.member_count; i++) {
-			if(parent_type.struct_type.member_name_ids[i]
-				== expr->struct_access.member_id
-			) {
-				elem_index = i;
-				break;
-			}
-		}
-
-		if(elem_index == SIZE_MAX) {
-			fprintf(
-				stderr,
-				"No Member '%s' in Type '",
-				cg->identifiers[expr->struct_access.member_id]
-			);
-			type_print(stderr, &scope->tc, parent_type, cg->identifiers);
-			fprintf(stderr, "' at ");
-			lexer_print_debug_to_file(stderr, &expr->debug.debug_info);
-			fprintf(stderr, "\n");
-			*err = ERROR_UNEXPECTED_DATA;
-			goto RET;
-		}
-
-		FPRINTF_OR_ERR(cg->output, "%%%zi = extractvalue ", *temp_counter);
-		*temp_counter += 1;
-		print_type(cg->output, &scope->tc, parent_type, err);
-		if(*err) goto RET;
-		FPRINTF_OR_ERR(
-			cg->output,
-			" %%%zi, %zi\n",
-			parent_ssa,
-			elem_index
-		);
-	} break;
-	
-	case AST_ARROW: {
-		Type parent_type = type_of_expr(
-			cg,
-			scope,
-			expr->struct_access.parent,
-			err
-		);
-		if(*err) goto RET;
-
-		if(parent_type.type != TYPE_POINTER_CONST
-			&& parent_type.type != TYPE_POINTER_ABYSS
-			&& parent_type.type != TYPE_POINTER_VAR
-		) {
-			fprintf(stderr, "Cannot Use Arrow Operator on non-Pointer Type at ");
-			lexer_print_debug_to_file(stderr, &expr->debug.debug_info);
-			fprintf(stderr, "\n");
-			*err = ERROR_UNEXPECTED_DATA;
-			goto RET;
-		}
-
-		const Type target_type = type_resolve(
-			&scope->tc,
-			scope->tc.types[parent_type.pointer.base]
-		);
-
-		if(target_type.type != TYPE_STRUCT) {
-			fprintf(
-				stderr,
-				"No Member '%s' in non-struct Type at ",
-				cg->identifiers[expr->struct_access.member_id]
-			);
-			lexer_print_debug_to_file(stderr, &expr->debug.debug_info);
-			fprintf(stderr, "\n");
-			*err = ERROR_UNEXPECTED_DATA;
-			goto RET;
-		}
-
-		gen_expr(
-			cg,
-			&cg->nodes[expr->struct_access.parent],
-			parent_type,
-			temp_counter,
-			scope,
-			err
-		);
-		if(*err) goto RET;
-
-		size_t parent_ssa = *temp_counter - 1;
-
-		size_t elem_index = SIZE_MAX;
-		for(size_t i = 0; i < target_type.struct_type.member_count; i++) {
-			if(target_type.struct_type.member_name_ids[i]
-				== expr->struct_access.member_id
-			) {
-				elem_index = i;
-				break;
-			}
-		}
-
-		if(elem_index == SIZE_MAX) {
-			fprintf(
-				stderr,
-				"No Member '%s' in Type '",
-				cg->identifiers[expr->struct_access.member_id]
-			);
-			type_print(stderr, &scope->tc, parent_type, cg->identifiers);
-			fprintf(stderr, "' at ");
-			lexer_print_debug_to_file(stderr, &expr->debug.debug_info);
-			fprintf(stderr, "\n");
-			*err = ERROR_UNEXPECTED_DATA;
-			goto RET;
-		}
-
-		FPRINTF_OR_ERR(cg->output, "%%%zi = load ", *temp_counter);
-		*temp_counter += 1;
-		print_type(cg->output, &scope->tc, target_type, err);
-		FPRINTF_OR_ERR(cg->output, ", ptr %%%zi\n", parent_ssa);
-
-		FPRINTF_OR_ERR(cg->output, "%%%zi = extractvalue ", *temp_counter);
-		*temp_counter += 1;
-		print_type(cg->output, &scope->tc, target_type, err);
-		if(*err) goto RET;
-		FPRINTF_OR_ERR(
-			cg->output,
-			" %%%zi, %zi\n",
-			*temp_counter - 2,
-			elem_index
-		);
-	} break;
-
-	case AST_STRING_LIT: {
-		FPRINTF_OR_ERR(
-			cg->output,
-			"%%%zi = insertvalue {ptr, i64} poison, ptr @.S%zi, 0\n"
-			"%%%zi = sub i64 @.SL%zi, 1\n"
-			"%%%zi = insertvalue {ptr, i64} %%%zi, i64 %%%zi, 1\n",
-			*temp_counter, expr->string_lit.id,
-			*temp_counter + 1, expr->string_lit.id,
-			*temp_counter + 2, *temp_counter, *temp_counter + 1
-		);
-		*temp_counter += 3;
-	} break;
-
-	case AST_ZSTRING_LIT: {
-		FPRINTF_OR_ERR(
-			cg->output,
-			"%%%zi = insertvalue {ptr, i64} poison, ptr @.S%zi, 0\n"
-			"%%%zi = insertvalue {ptr, i64} %%%zi, i64 @.SL%zi, 1\n",
-			*temp_counter, expr->string_lit.id,
-			*temp_counter + 1, *temp_counter, expr->string_lit.id
-		);
-		*temp_counter += 2;
-	} break;
-
-	case AST_CSTRING_LIT: {
-		FPRINTF_OR_ERR(
-			cg->output,
-			"%%%zi = insertvalue {ptr} poison, ptr @.S%zi, 0\n"
-			"%%%zi = extractvalue {ptr} %%%zi, 0\n",
-			*temp_counter, expr->string_lit.id,
-			*temp_counter + 1, *temp_counter
-		);
-		*temp_counter += 2;
-	} break;
-
-	default:
-		fprintf(stderr,	"Expected Expression at	");
-		lexer_print_debug_to_file(stderr, &expr->debug.debug_info);
-		fprintf(stderr,	"\n");
-		*err = ERROR_UNEXPECTED_DATA;
-		goto RET;
-	}
-RET:
-	return;
-}
-
-static void	gen_fn_def(
-	CodeGen *cg,
-	size_t index,
-	size_t fnnum,
-	const Scope *global_scope,
-	Error *err
-)
-{
-	Scope scope;
-	scope_init(&scope, global_scope, err);
-	if(*err) goto RET;
-
-	DynArr vars;
-	dynarr_init(&vars, sizeof(Var));
-
-	assert(cg->nodes[index].type ==	AST_FN_DEF);
-	const AstNode fn = cg->nodes[index];
-
-	const FnSig	sig	= cg->fn_sigs[fnnum];
-
-	const AstNode block	= cg->nodes[fn.fn_def.block];
-	if(block.type == AST_EXTERN) {
-		FPUTS_OR_ERR(cg->output, "declare dso_local ");
-		print_type(cg->output, &scope.tc, sig.ret, err);
-		if(*err) goto RET;
-
-		FPRINTF_OR_ERR(cg->output, " @%s(", cg->strings[sig.linkage_name]);
-
-		for(size_t i = 0; i	< sig.arg_count; i++) {
-			if(sig.args[i].type == TYPE_SLICE_CONST
-			   || sig.args[i].type == TYPE_SLICE_ABYSS
-			   || sig.args[i].type == TYPE_SLICE_VAR
-			) {
-				if(fprintf(
-					cg->output,
-					"ptr noundef %%%s.0, i64 noundef %%%s.1\n",
-					cg->identifiers[sig.arg_ids[i]],
-					cg->identifiers[sig.arg_ids[i]]
-				) < 0) {
-					fprintf(stderr, "Failed to Write to IR File\n");
-					*err = ERROR_IO;
-					dynarr_clean(&vars);
-					goto RET;
-				}
-			} else {
-				print_type(cg->output, &scope.tc, sig.args[i], err);
-				if(*err) {
-					dynarr_clean(&vars);
-				}
-
-				if(!fprintf(
-					cg->output,
-					" noundef %%%s",
-					cg->identifiers[sig.arg_ids[i]]
-				)) {
-					fprintf(stderr, "Failed to Write to IR File!\n");
-					*err = ERROR_IO;
-					dynarr_clean(&vars);
-					goto RET;
-				}
-			}
-
-			if(i != sig.arg_count - 1) {
-				if(fprintf(cg->output, ", ") < 0) {
-					fprintf(stderr, "Failed to Write to IR File!\n");
-					*err = ERROR_IO;
-					dynarr_clean(&vars);
-					goto RET;
-				}
-			}
-		}
-		FPUTS_OR_ERR(cg->output, ")\n");
-
-		goto RET;
-	}
-
-	FPUTS_OR_ERR(cg->output,  "define dso_local ");
-	print_type(cg->output, &scope.tc, sig.ret, err);
-	if(*err) goto RET;
-
-	FPRINTF_OR_ERR(cg->output, " @%s(", cg->identifiers[sig.id]);
-
-	for(size_t i = 0; i	< sig.arg_count; i++) {
-		if(sig.args[i].type == TYPE_SLICE_CONST
-		   || sig.args[i].type == TYPE_SLICE_ABYSS
-		   || sig.args[i].type == TYPE_SLICE_VAR
-		) {
-			if(fprintf(
-				cg->output,
-				"ptr noundef %%%s.0, i64 noundef %%%s.1\n",
-				cg->identifiers[sig.arg_ids[i]],
-				cg->identifiers[sig.arg_ids[i]]
-			) < 0) {
-				fprintf(stderr, "Failed to Write to IR File\n");
-				*err = ERROR_IO;
-				dynarr_clean(&vars);
-				goto RET;
-			}
-		} else {
-			print_type(cg->output, &scope.tc, sig.args[i], err);
-			if(*err) {
-				dynarr_clean(&vars);
-			}
-
-			if(!fprintf(
-				cg->output,
-				" noundef %%%s",
-				cg->identifiers[sig.arg_ids[i]]
-			)) {
-				fprintf(stderr, "Failed to Write to IR File!\n");
-				*err = ERROR_IO;
-				dynarr_clean(&vars);
-				goto RET;
-			}
-		}
-
-		if(i != sig.arg_count - 1) {
-			if(fprintf(cg->output, ", ") < 0) {
-				fprintf(stderr, "Failed to Write to IR File!\n");
-				*err = ERROR_IO;
-				dynarr_clean(&vars);
-				goto RET;
-			}
-		}
-
-		dynarr_push(
-			&vars,
-			&(Var) {
-				.id = sig.arg_ids[i],
-				.type = sig.args[i],
-				.mut = false,
-				.declared = true,
-				.arg = true,
-			},
-			err
-		);
-		if(*err) {
-			dynarr_clean(&vars);
-			goto RET;
-		}
-	}
-
-	FPUTS_OR_ERR(cg->output, ") {\n");
-
-
-	for(size_t i = 0; i < sig.arg_count; i ++) {
-		if(sig.args[i].type == TYPE_SLICE_CONST
-		   || sig.args[i].type == TYPE_SLICE_ABYSS
-		   || sig.args[i].type == TYPE_SLICE_VAR
-		) {
-			FPRINTF_OR_ERR(
-				cg->output,
-				"%%%s.ptr = insertvalue {ptr, i64} poison, ptr %%%s.0, 0\n"
-				"%%%s = insertvalue {ptr, i64} %%%s.ptr, i64 %%%s.1, 1\n",
-				cg->identifiers[sig.arg_ids[i]],
-				cg->identifiers[sig.arg_ids[i]],
-				cg->identifiers[sig.arg_ids[i]],
-				cg->identifiers[sig.arg_ids[i]],
-				cg->identifiers[sig.arg_ids[i]]
-			);
-		}
-	}
-
-	for(size_t i = 0; i	< block.block.statement_count; i++)	{
-		const AstNode *statement = &cg->nodes[block.block.statements[i]];
-
-		if(statement->type == AST_VAR_DECL)	{
-			Type type =	type_from_ast(
-				&scope.tc,
-				cg->nodes,
-				statement->var_decl.data_type,
-				err
-			);
-			if(type.type == TYPE_ARRAY && !type.array.len) {
-				if(!statement->var_decl.initial) {
-					fprintf(
-						stderr,
-						"Cannot Infer Length of Array '%s' without Initial "
-						"value at ",
-						cg->identifiers[statement->var_decl.id]
-					);
-					lexer_print_debug_to_file(
-						stderr,
-						&statement->debug.debug_info
-					);
-					fprintf(stderr, "\n");
-					*err = ERROR_UNEXPECTED_DATA;
-					goto RET;
-				}
-				Type init = type_of_expr(
-					cg,
-					&scope,
-					statement->var_decl.initial,
-					err
-				);
-				if(*err) goto RET;
-				if(init.type != TYPE_ARRAY
-				   || init.array.base != type.array.base
-				) {
-					fprintf(
-						stderr,
-						"Cannot Assign non-Array to Array-Type Variable '%s' "
-						" at ",
-						cg->identifiers[statement->var_decl.id]
-					);
-					lexer_print_debug_to_file(
-						stderr,
-						&statement->debug.debug_info
-					);
-					fprintf(stderr, "\n");
-					*err = ERROR_UNEXPECTED_DATA;
-					goto RET;
-				}
-
-				type.array.len = init.array.len;
-			}
-			if(*err) {
-				if(vars.data) free(vars.data);
-				goto RET;
-			}
-
-			if(!statement->var_decl.mut && !statement->var_decl.initial)	{
-				fprintf(
-					stderr,
-					"Declaring Uninitialized const variable	'%s' at	",
-					cg->identifiers[statement->var_decl.id]
-				);
-				lexer_print_debug_to_file(
-					stderr,
-					&statement->debug.debug_info
-				);
-				fprintf(stderr,	"\n");
-				// No ERROR	because	compilation	can	continue
-			}
-
-			dynarr_push(
-				&vars,
-				&(Var) {
-					.id	= statement->var_decl.id,
-					.type =	type,
-					.mut = statement->var_decl.mut,
-					.declared =	false,
-				},
-				err
-			);
-			if(*err) goto RET; // realloc fail returns NULL
-		}
-	}
-
-	scope.vars = vars.data;
-	scope.var_count	= vars.count;
-
-	size_t varnum =	sig.arg_count;
-	size_t temp_counter	= 1;
-	bool returned = false;
-	for(size_t i = 0; i	< block.block.statement_count; i++)	{
-		const AstNode *statement = &cg->nodes[block.block.statements[i]];
-
-		switch(statement->type)	{
-		case AST_VAR_DECL:
-			scope.vars[varnum].declared	= true;
-
-			FPRINTF_OR_ERR(
-				cg->output,
-				"%%%s = alloca ",
-				cg->identifiers[statement->var_decl.id]
-			);
-			print_type(
-				cg->output,
-				&scope.tc,
-				scope.vars[varnum].type,
+				lhs.type,
+				statement.assign.expr,
+				&scope,
 				err
 			);
 			if(*err) goto RET;
-			FPUTS_OR_ERR(cg->output, "\n");
 
-			if(statement->var_decl.initial)	{
-				gen_expr(
-					cg,
-					&cg->nodes[statement->var_decl.initial],
-					scope.vars[varnum].type,
-					&temp_counter,
-					&scope,
-					err
-				);
-				FPUTS_OR_ERR(cg->output, "store ");
-				print_type(
-					cg->output,
-					&scope.tc,
-					scope.vars[varnum].type,
-					err
-				);
-				if(*err) goto RET;
-				FPRINTF_OR_ERR(
-					cg->output,
-					" %%%zi, ptr %%%s\n",
-					temp_counter - 1,
-					cg->identifiers[scope.vars[varnum].id]
-				);
-			}
-			varnum++;
-			break;
+			gcc_jit_block_add_assignment(
+				gcc_block,
+				gen_loc(cg->gcc, statement.debug.debug_info),
+				lhs.lvalue,
+				rhs.expr
+			);
+		} break;
 
-		case AST_RET:
-			if(statement->ret.return_val) {
-				gen_expr(
-					cg,
-					&cg->nodes[statement->ret.return_val],
-					sig.ret,
-					&temp_counter,
-					&scope,
-					err
-				);
-				if(*err) goto RET;
-				FPUTS_OR_ERR(cg->output, "ret ");
-				print_type(cg->output, &scope.tc, sig.ret, err);
-				if(*err) goto RET;
-				FPRINTF_OR_ERR(cg->output, " %%%zi\n", temp_counter - 1);
-			} else {
-				if(sig.ret.type != TYPE_PRIMITIVE_VOID) {
-					fprintf(
-						stderr,
-						"Function with a non-void Return Type returns void at "
-					);
-					lexer_print_debug_to_file(
-						stderr,
-						&statement->debug.debug_info
-					);
-					fprintf(stderr, "\n");
-					*err = ERROR_UNEXPECTED_DATA;
-					goto RET;
-				}
-
-				FPUTS_OR_ERR(cg->output, "ret void\n");
-			}
-			returned = true;
-			break;
-
-		case AST_ASSIGN:
 		case AST_ADD_ASSIGN:
 		case AST_SUB_ASSIGN:
 		case AST_MUL_ASSIGN:
-		case AST_DIV_ASSIGN:
-			gen_assign(cg, statement, &temp_counter, &scope, err);
-			if(*err) goto RET;
-			break;
+		case AST_DIV_ASSIGN: {
+			enum gcc_jit_binary_op op;
+			switch(statement.type) {
+			case AST_ADD_ASSIGN: op = GCC_JIT_BINARY_OP_PLUS; break;
+			case AST_SUB_ASSIGN: op = GCC_JIT_BINARY_OP_MINUS; break;
+			case AST_MUL_ASSIGN: op = GCC_JIT_BINARY_OP_MULT; break;
+			case AST_DIV_ASSIGN: op = GCC_JIT_BINARY_OP_DIVIDE; break;
+			default: assert(0);
+			}
 
-		case AST_FN_CALL:
-			gen_fn_call(
+			Lvalue lhs = gen_lvalue(
 				cg,
-				statement,
-				(Type) {.type =	TYPE_PRIMITIVE_VOID},
-				&temp_counter,
+				statement.assign.var,
 				&scope,
 				err
 			);
 			if(*err) goto RET;
-			break;
 
-		case AST_DISCARD:
-			gen_expr(
+			if(!lhs.mut || !lhs.read) {
+				wyrt_diag(
+					stderr, cg->identifiers, cg->strings, &scope.tc,
+					"Cannot Perform Compound Assignment on non-'var' Value at %l\n",
+					&statement.debug.debug_info
+				);
+				*err = ERROR_UNEXPECTED_DATA;
+				goto RET;
+			}
+
+			Expr rhs = gen_expr(
 				cg,
-				&cg->nodes[statement->discard.value],
-				(Type) {.type = TYPE_NONE},
-				&temp_counter,
+				lhs.type,
+				statement.assign.expr,
 				&scope,
 				err
 			);
 			if(*err) goto RET;
+
+			gcc_jit_block_add_assignment_op(
+				gcc_block,
+				gen_loc(cg->gcc, statement.debug.debug_info),
+				lhs.lvalue,
+				op,
+				rhs.expr
+			);
+		} break;
+		
+		case AST_RET:
+			returned = true;
+			if(sig.ret.type == TYPE_PRIMITIVE_VOID) {
+				if(statement.ret.return_val) {
+					fprintf(stderr, "Cannot Return a Value from a void function at ");
+					lexer_print_debug_to_file(stderr, &statement.debug.debug_info);
+					fprintf(stderr, "\n");
+					*err = ERROR_UNEXPECTED_DATA;
+					goto RET;
+				}
+
+				gcc_jit_block_end_with_void_return(
+					gcc_block,
+					gen_loc(cg->gcc, statement.debug.debug_info)
+				);
+			} else {
+				Expr val = gen_expr(cg, sig.ret, statement.ret.return_val, &scope, err);
+				if(*err) goto RET;
+
+				gcc_jit_block_end_with_return(
+					gcc_block,
+					gen_loc(cg->gcc, statement.debug.debug_info),
+					val.expr		
+				);
+			}
 			break;
 
 		default:
-			fprintf(stderr,	"Expected Statement	at ");
-			lexer_print_debug_to_file(
-				stderr,
-				&statement->debug.debug_info
-			);
-			fprintf(stderr,	"\n");
+			fprintf(stderr, "Invalid Statement at ");
+			lexer_print_debug_to_file(stderr, &statement.debug.debug_info);
+			fprintf(stderr, "\n");
 			*err = ERROR_UNEXPECTED_DATA;
 			goto RET;
 		}
@@ -3218,276 +1918,199 @@ static void	gen_fn_def(
 
 	if(!returned) {
 		if(sig.ret.type != TYPE_PRIMITIVE_VOID) {
-			fprintf(
-				stderr,
-				"Function with a non-void Return Type does not return at "
+			wyrt_diag(
+				stderr, cg->identifiers, cg->strings, &scope.tc,
+				"Non-Void Function '%i' does not return a value!\n",
+				sig.id
 			);
-			lexer_print_debug_to_file(stderr, &fn.debug.debug_info);
-			fprintf(stderr, "\n");
 			*err = ERROR_UNEXPECTED_DATA;
 			goto RET;
 		}
 
-		FPUTS_OR_ERR(cg->output, "ret void\n");
-	}
-
-	FPUTS_OR_ERR(cg->output, "}\n\n");
-
-RET:
-	scope_clean(&scope);
-	return;
-}
-
-static void gen_fnsig(CodeGen *cg, Scope *global_scope, size_t index, FnSig *sig, Error *err)
-{
-	const AstNode *type	= &cg->nodes[
-		cg->nodes[index].fn_def.fn_type
-	];
-
-	assert(type->type == AST_FN_TYPE);
-
-	Type *args = malloc(type->fn_type.arg_count	* sizeof*args);
-	CHECK_MALLOC(args);
-	size_t *arg_ids = malloc(type->fn_type.arg_count * sizeof*arg_ids);
-	if(!arg_ids) {
-		fprintf(stderr, "OOM!\n");
-		free(args);
-		*err = ERROR_OUT_OF_MEMORY;
-		goto RET;
-	}
-
-	for(size_t j = 0; j	< type->fn_type.arg_count; j++)	{
-		args[j]	= type_from_ast(
-			&global_scope->tc,
-			cg->nodes,
-			type->fn_type.args[2*j+1],
-			err
+		gcc_jit_block_end_with_void_return(
+			gcc_block,
+			NULL
 		);
-		if(*err) {
-			free(args);
-			free(arg_ids);
-			goto RET;
-		}
-
-		AstNode ident = cg->nodes[type->fn_type.args[2*j]];
-		assert(ident.type == AST_IDENT);
-		arg_ids[j] = ident.ident.id;
 	}
-
-	Type ret = type_from_ast(
-		&global_scope->tc,
-		cg->nodes,
-		type->fn_type.ret_type,
-		err
-	);
-
-	if(*err) {
-		free(args);
-		free(arg_ids);
-		goto RET;
-	}
-
-	size_t id = cg->nodes[cg->nodes[index].fn_def.ident].ident.id;
-	size_t linkage_name = SIZE_MAX;
-	if(cg->nodes[cg->nodes[index].fn_def.block].type == AST_EXTERN) {
-		const AstNode name = cg->nodes[cg->nodes[index].fn_def.block];
-		linkage_name = cg->nodes[name.extrn.name].string_lit.id;
-	}
-
-	*sig = (FnSig) {
-		.id = id,
-		.linkage_name = linkage_name,
-		.ret = ret,
-		.arg_count = type->fn_type.arg_count,
-		.args =	args,
-		.arg_ids = arg_ids,
-	};
 
 RET:
 	return;
 }
 
-void codegen_gen(CodeGen *cg, Error	*err)
+void codegen_gen(CodeGen *cg, GenType gen_type, const char *path, const char *ir_dump, Error *err)
 {
-	Scope global_scope;
-	scope_init(&global_scope, NULL,	err);
+	assert(cg->nodes[0].type == AST_MODULE);
+	DynArr sigs;
+	dynarr_init(&sigs, sizeof(FnSig));
+	DynArr fns;
+	dynarr_init(&fns, sizeof(gcc_jit_function*));
+
+	Scope global;
+	scope_init(&global, NULL, err);
 	if(*err) goto RET;
+	
+	const AstNode module = cg->nodes[0];
 
-	DynArr fn_sigs = {
-		.data =	cg->fn_sigs,
-		.elem_size = sizeof(*cg->fn_sigs),
-		.count = 0,
-		.capacity =	0,
-	};
-
-	FPRINTF_OR_ERR(
-		cg->output,
-		"source_filename = \"%s\"\n"
-		"!0 = !{i32 8, !\"PIC Level\", i32 2}\n"
-		"!1 = !{i32 7, !\"PIE Level\", i32 2}\n"
-		"!2 = !{i32 7, !\"uwtable\", i32 2}\n"
-		"!3 = !{i32 7, !\"frame-pointer\", i32 2}\n"
-		"!4 = !{!\"wyrt version 0.1.0\"}\n"
-		"!llvm.module.flags = !{!0, !1, !2, !3}\n"
-		"!llvm.ident = !{!4}\n\n",
-		cg->nodes[0].debug.debug_info.file
-	);
-	cg->metadata_counter = 5;
-
-	for(size_t i = 0; i < cg->string_count; i++) {
-		size_t len = strlen(cg->strings[i]) + 1;
-		FPRINTF_OR_ERR(
-			cg->output,
-			"@.S%zi = internal constant [%zi x i8] c\"",
-			i, len
-		);
-		for(size_t j = 0; j < len; j++) {
-			switch(cg->strings[i][j]) {
-			case '\n':
-				FPUTS_OR_ERR(cg->output, "\\0A");
-				break;
-			case '\"':
-				FPUTS_OR_ERR(cg->output, "\\22");
-				break;
-			default:
-				do {} while(0);
-				char c[2] = {cg->strings[i][j], 0};
-				FPUTS_OR_ERR(cg->output, c);
-				break;
-			}
-		}
-
-		FPRINTF_OR_ERR(
-			cg->output,
-			"\\00\"\n"
-			"@.SL%zi = internal constant i64 %zi\n",
-			i, len
-		);
-	}
-
-	assert(cg->nodes[0].type ==	AST_MODULE);
-	size_t *statements = cg->nodes[0].module.statements;
-	const size_t statement_count = cg->nodes[0].module.statement_count;
-
-	for(size_t i = 0; i	< statement_count; i++)	{
-		const size_t index = statements[i];
-		switch(cg->nodes[index].type) {
-		case AST_FN_DEF:
-			dynarr_alloc(&fn_sigs, 1, err);
-			if(*err) {
-				FnSig *sigs = fn_sigs.data;
-				for(size_t i = 0; i < fn_sigs.count - 1; i++) {
-					if(sigs[i].args) free(sigs[i].args);
-					if(sigs[i].arg_ids) free(sigs[i].arg_ids);
-				}
-				free(sigs);
-				goto RET;
-			}
-			gen_fnsig(cg, &global_scope, index, dynarr_from_back(&fn_sigs, 0), err);
-			if(*err) {
-				FnSig *sigs = fn_sigs.data;
-				for(size_t i = 0; i < fn_sigs.count - 1; i++) {
-					if(sigs[i].args) free(sigs[i].args);
-					if(sigs[i].arg_ids) free(sigs[i].arg_ids);
-				}
-				free(sigs);
-				goto RET;
-			}
-			break;
-
-		case AST_TYPEDEF: {
-			size_t id = cg->nodes[index].typdef.id;
-			Type backing = type_from_ast(&global_scope.tc, cg->nodes, cg->nodes[index].typdef.backing, err);
+	for(size_t i = 0; i < module.module.statement_count; i++) {
+		size_t index = module.module.statements[i];
+		if(cg->nodes[index].type == AST_TYPEDEF) {
+			Type backing = type_from_ast(&global.tc, cg->nodes, cg->nodes[index].typdef.backing, err);
 			if(*err) goto RET;
-			size_t backing_index = types_register_nexist(&global_scope.tc, backing, err);
-			if(*err) goto RET;
-			types_register(
-				&global_scope.tc,
-				(Type) {
-					.typdef = {
-						.type = TYPE_TYPEDEF,
-						.id = id,
-						.backing = backing_index,
-					},
+
+			size_t type_index = SIZE_MAX;
+			for(size_t j = 0; j < global.tc.count; j++) {
+				if(types_are_equal(backing, global.tc.types[j])) {
+					type_index = j;
+					break;
+				}
+			}
+			assert(type_index != SIZE_MAX);
+
+			Type t = (Type) {
+				.typdef = {
+					.type = TYPE_TYPEDEF,
+					.id = cg->nodes[index].typdef.id,
+					.backing = type_index,
 				},
-				err
-			);
+			};
+
+			types_register(&global.tc, t, err);
 			if(*err) goto RET;
-		} break;
-		default:
-			break;
 		}
 	}
 
-	cg->fn_sigs	= fn_sigs.data;
-	cg->fn_sig_count = fn_sigs.count;
+	for(size_t i = 0; i < module.module.statement_count; i++) {
+		size_t index = module.module.statements[i];
+		if(cg->nodes[index].type == AST_FN_DEF) {
+			dynarr_alloc(&sigs, 1, err);
+			if(*err) {
+				dynarr_clean(&sigs);
+				dynarr_clean(&fns);
+				goto RET;
+			}
+			dynarr_alloc(&fns, 1, err);
+			if(*err) {
+				dynarr_clean(&sigs);
+				dynarr_clean(&fns);
+				goto RET;
+			}
+			
+			FnSig *sig = dynarr_from_back(&sigs, 0);
+			*(gcc_jit_function**)dynarr_from_back(&fns, 0) = gen_fnsig(cg, sig, &global, index, err);
+			
+			if(*err) {
+				dynarr_clean(&sigs);
+				dynarr_clean(&fns);
+				goto RET;
+			}
+		}	
+	}
+	cg->fn_sigs = sigs.data;
+	cg->fns = fns.data;
+	cg->fn_count = sigs.count;
 
 	size_t fnnum = 0;
-	for(size_t i = 0; i	< cg->nodes[0].module.statement_count; i++)	{
-		const size_t index = statements[i];
+	for(size_t i = 0; i < module.module.statement_count; i++) {
+		size_t index = module.module.statements[i];
 		switch(cg->nodes[index].type) {
 		case AST_FN_DEF:
-			gen_fn_def(cg, index, fnnum, &global_scope, err);
+			gen_fn(cg, cg->fn_sigs[fnnum], index, cg->fns[fnnum], &global, err);
 			if(*err) goto RET;
 			fnnum += 1;
 			break;
 
-		case AST_TYPEDEF:
-			break;
+		case AST_TYPEDEF: {
+			Type backing = type_from_ast(
+				&global.tc,
+				cg->nodes,
+				cg->nodes[index].typdef.backing,
+				err		
+			);
+			if(*err) goto RET;
+			types_register(&global.tc, backing, err);
+			if(*err ) goto RET;
+		} break;
 
 		default:
-			fprintf(stderr,	"Invalid Module-Level Statement	at ");
-			lexer_print_debug_to_file(
-				stderr,
-				&cg->nodes[index].debug.debug_info
-			);
-			fprintf(stderr,	"\n");
+			fprintf(stderr, "Illegal File-Scope Statement at ");
+			lexer_print_debug_to_file(stderr, &cg->nodes[i].debug.debug_info);
+			fprintf(stderr, "\n");
 			*err = ERROR_UNEXPECTED_DATA;
 			goto RET;
 		}
 	}
 
+	if(ir_dump) {
+		gcc_jit_context_dump_to_file(cg->gcc, ir_dump, false);
+	}
+
+	switch(gen_type) {
+	case GEN_EXE:
+		gcc_jit_context_compile_to_file(
+			cg->gcc,
+			GCC_JIT_OUTPUT_KIND_EXECUTABLE,
+			path
+		);
+		break;
+	case GEN_SHR:
+		gcc_jit_context_compile_to_file(
+			cg->gcc,
+			GCC_JIT_OUTPUT_KIND_DYNAMIC_LIBRARY,
+			path
+		);
+		break;
+	case GEN_OBJ:
+		gcc_jit_context_compile_to_file(
+			cg->gcc,
+			GCC_JIT_OUTPUT_KIND_OBJECT_FILE,
+			path
+		);
+		break;
+	case GEN_ASM:	
+		gcc_jit_context_compile_to_file(
+			cg->gcc,
+			GCC_JIT_OUTPUT_KIND_ASSEMBLER,
+			path
+		);
+		break;
+	}
+
 RET:
-	scope_clean(&global_scope);
 	return;
 }
 
-
-void scope_init(Scope *scope, const	Scope *parent, Error *err)
+void scope_init(Scope *scope, const Scope *parent, Error *err)
 {
-	*scope = (Scope) { 0 };
-
 	if(parent) {
-		if(parent->params) {
-			scope->params =	malloc(parent->param_count * sizeof*scope->params);
-			CHECK_MALLOC(scope->params);
-			memcpy(scope->params, parent->params, parent->param_count);
-			scope->param_count = parent->param_count;
-		}
-		if(parent->vars) {
-			scope->vars	= malloc(parent->var_count * sizeof*scope->vars);
-			CHECK_MALLOC(scope->vars);
-			memcpy(scope->vars,	parent->vars, parent->var_count);
-			scope->var_count = parent->var_count;
-		}
-		if(parent->tc.types) {
-			types_copy(&scope->tc, &parent->tc, err);
-			if(*err) goto RET;
-		}
+		scope->params = malloc(parent->param_count * sizeof(Var));
+		CHECK_MALLOC(scope->params);
+		scope->param_count = parent->param_count;
+		scope->vars = malloc(parent->var_count * sizeof(Var));
+		CHECK_MALLOC(scope->vars);
+		scope->var_count = parent->var_count;
 
+		memcpy(scope->params, parent->params, parent->param_count * sizeof(Var));
+		memcpy(scope->vars, parent->vars, parent->var_count * sizeof(Var));
+
+		types_copy(&scope->tc, &parent->tc, err);
+		if(*err) goto RET;
 	} else {
+		scope->params = NULL;
+		scope->vars = NULL;
+		scope->param_count = 0;
+		scope->var_count = 0;
+
 		types_init(&scope->tc, err);
 		if(*err) goto RET;
 	}
 
 RET:
-	if(*err) scope_clean(scope);
 	return;
 }
 
 void scope_clean(const Scope *scope)
 {
 	if(scope->params) free(scope->params);
-	if(scope->vars)	free(scope->vars);
-	types_clean(&scope->tc);
+	if(scope->vars) free(scope->vars);
+	if(scope->tc.types) free(scope->tc.types);
 }

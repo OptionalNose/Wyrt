@@ -3,16 +3,24 @@
 ########################################################################
 
 # Compiler settings - Can be customized.
-CC = clang
-CFLAGS = -std=c99 -fcolor-diagnostics
-LDFLAGS = -lm -lc
+CC = gcc
+CFLAGS = -std=c99 -Wall -Wpedantic
+LDFLAGS = -lgccjit
 
 # Visibility for later
-SPECIAL_FLAGS = -O0 -g -fsanitize=undefined,address
+ifeq ($(OS), Windows_NT)
+	SPECIAL_FLAGS = -O0 -g -fsanitize=undefined -fsanitize-trap=all
+else
+	SPECIAL_FLAGS = -O0 -g -fsanitize=undefined,address
+endif
 
 
 # Makefile settings - Can be customized.
-APPNAME = wyrt
+ifeq ($(OS), Windows_NT)
+	APPNAME = wyrt.exe
+else
+	APPNAME = wyrt
+endif
 EXT = .c
 SRCDIR = ./src
 OBJDIR = ./obj
@@ -22,15 +30,6 @@ SRC = $(wildcard $(SRCDIR)/*$(EXT))
 OBJ = $(SRC:$(SRCDIR)/%$(EXT)=$(OBJDIR)/%.o)
 DEP = $(OBJ:$(OBJDIR)/%.o=%.d)
 
-
-# UNIX-based OS variables & settings
-RM = rm
-DELOBJ = $(OBJ)
-# Windows OS variables & settings
-DEL = del
-EXE = .exe
-WDELOBJ = $(SRC:$(SRCDIR)/%$(EXT)=$(OBJDIR)\\%.o)
-
 ########################################################################
 ####################### Targets beginning here #########################
 ########################################################################
@@ -38,13 +37,13 @@ WDELOBJ = $(SRC:$(SRCDIR)/%$(EXT)=$(OBJDIR)\\%.o)
 all: $(APPNAME)
 
 release:
-	$(CC) -O3 $(CFLAGS) $(LDFLAGS) -o $(APPNAME)_Release $(SRC)
+	$(CC) -O3 $(CFLAGS) -Werror -o $(APPNAME)_Release $(SRC) $(LDFLAGS) 
 
 run: all
 	@./$(APPNAME)
 
 debug:
-	$(CC) -O0 -g $(CFLAGS) $(LDFLAGS) -o $(APPNAME)_Debug $(SRC)
+	$(CC) -O0 -g $(CFLAGS) -o $(APPNAME)_Debug $(SRC) $(LDFLAGS) 
 
 test: test_runner release $(APPNAME)
 	@./test_runner
@@ -71,25 +70,3 @@ $(OBJDIR)/%.o: $(SRCDIR)/%$(EXT) | $(OBJDIR)
 
 $(OBJDIR):
 	@mkdir $@
-
-################### Cleaning rules for Unix-based OS ###################
-# Cleans complete project
-.PHONY: clean
-clean:
-	$(RM) $(DELOBJ) $(DEP) $(APPNAME) $(APPNAME)_Release
-
-# Cleans only all files with the extension .d
-.PHONY: cleandep
-cleandep:
-	$(RM) $(DEP)
-
-#################### Cleaning rules for Windows OS #####################
-# Cleans complete project
-.PHONY: cleanw
-cleanw:
-	$(DEL) $(WDELOBJ) $(DEP) $(APPNAME)$(EXE)
-
-# Cleans only all files with the extension .d
-.PHONY: cleandepw
-cleandepw:
-	$(DEL) $(DEP)

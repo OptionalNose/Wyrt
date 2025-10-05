@@ -3,6 +3,7 @@
 #include "util.h"
 
 #include <string.h>
+#include <assert.h>
 
 void types_init(TypeContext *tc, Error *err)
 {
@@ -194,7 +195,6 @@ Type type_from_ast(TypeContext *tc, AstNode const *nodes, size_t i, Error *err)
 		index = types_register_nexist(tc, slice_type, err);
 		if(*err) goto RET;
 
-		TypeType slice_access; 
 		switch(node->type) {
 		default:
 		case AST_SLICE_CONST:
@@ -309,6 +309,7 @@ bool types_are_equal(Type a, Type b)
 		if(a.typdef.id == b.typdef.id) return true;
 		return false;
 	}
+	__builtin_unreachable();
 }
 
 bool types_are_compatible(TypeContext const *tc, Type a, Type b)
@@ -403,6 +404,7 @@ bool types_are_compatible(TypeContext const *tc, Type a, Type b)
 		return types_are_equal(tc->types[a.typdef.backing], b);
 		break;
 	}
+	__builtin_unreachable();
 }
 
 void type_print(FILE *file, TypeContext const *tc, Type t, char *const *identifiers)
@@ -475,10 +477,12 @@ void type_print(FILE *file, TypeContext const *tc, Type t, char *const *identifi
 				tc->types[t.struct_type.member_types[i]],
 				identifiers
 			);
+			fprintf(file, ", ");
 		}
+		fprintf(file, "}");
 		break;
 	case TYPE_TYPEDEF:
-		fprintf(file, "\"%s\"", identifiers[t.typdef.id]);
+		fprintf(file, "%s", identifiers[t.typdef.id]);
 	}
 }
 
@@ -560,4 +564,43 @@ Type type_resolve(TypeContext const *tc, Type t)
 	}
 
 	return t;
+}
+
+
+Type types_get_ptr(
+	TypeContext const *tc,
+	Type base,
+	TypeType ptr_type
+)
+{
+	for(size_t i = 0; i < tc->count; i++) {
+		if(types_are_equal(tc->types[i], base)) {
+			return (Type) {
+				.pointer = {
+					.type = ptr_type,
+					.base = i,
+				},
+			};
+		}
+	}
+	assert(0);
+}
+
+bool type_is_subscriptable(
+	TypeContext const *tc,
+	Type t
+)
+{
+	switch(t.type) {
+	case TYPE_ARRAY: return true;
+	case TYPE_SLICE_CONST:
+	case TYPE_SLICE_ABYSS:
+	case TYPE_SLICE_VAR:
+		return true;
+	case TYPE_POINTER_CONST:
+	case TYPE_POINTER_ABYSS:
+	case TYPE_POINTER_VAR:
+		return tc->types[t.pointer.base].type == TYPE_ARRAY;
+	default: return false;
+	}
 }

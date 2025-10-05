@@ -5,7 +5,6 @@
 #include <stdlib.h>
 #include <stdint.h>
 
-
 typedef enum {
 	ERROR_OK,
 	ERROR_OUT_OF_MEMORY,

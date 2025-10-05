@@ -46,10 +46,11 @@ These Sanitizers at times do not like the high-levels of recursion throughout th
 If you get a Segfault message without any information from the Sanitizers, then it is highly likely they are the culprit.
 Running the program repeatedly, or inside a debugger, will fix the problem.
 
-The only _build_ dependency is `libc`, so the compiler should be able to build
-on any platform.
+The only _build_ dependencies are `libc` and `libgccjit`.
 
-The Compiler needs `clang` as a _runtime_ dependency to actually produce binaries.
+    If you are on Linux: install `libgccjit` using your package manager
+    
+    If you are on Windows: the only method I got to work was to install [MSYS2](https://www.msys2.org/), a minimalist Unix environment for Windows and use its package manager to install.
 
 ---
 
@@ -61,10 +62,6 @@ wyrt <src>.wyrt -o <output>
 to display the builtin help, run `wyrt --help` or `wyrt -h`
 
 Currently multiple input files and glob-patterns are not supported.
-
-The compiler uses LLVM via `clang` to produce and link the resulting binary.
-
-*You must have* `clang` *installed* in order to actually compiler anything.
 
 To only compile, but not link, use `wyrt -c`. The created object files can be linked normally.
 

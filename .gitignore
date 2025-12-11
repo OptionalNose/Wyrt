@@ -20,9 +20,12 @@ test_runner
 a.ll
 a.ll.opt
 ir
-a.exe
+*.exe
+*.dll
 src/.*
 tags
 test_runner.exe
-wyrt.exe
 wyrt.exe_Release
+config.h
+out
+err

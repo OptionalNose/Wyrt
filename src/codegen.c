@@ -5,13 +5,21 @@
 
 #include "ui.h"
 
+#ifdef _WIN32
+void *LoadLibraryA(const char *);
+void *GetProcAddress(void *, const char *);
+int FreeLibrary(void *);
+#else
+#include <dlfcn.h>
+#endif
+
 typedef struct {
-	gcc_jit_rvalue *expr;
+	WyrtRvalue *expr;
 	Type type;
 } Expr;
 
 typedef struct {
-	gcc_jit_lvalue *lvalue;
+	WyrtLvalue *lvalue;
 	Type type;
 	bool mut;
 	bool read;
@@ -23,10 +31,43 @@ void codegen_init(
 	size_t node_count,
 	char *const *identifiers,
 	char *const *strings,
-	size_t string_count
+	size_t string_count,
+	char const *dlpath,
+	Error *err
 )
 {
-	gcc_jit_context *gcc = gcc_jit_context_acquire();
+#ifdef _WIN32
+	void *dl = LoadLibraryA(dlpath);
+	if(!dl) {
+		fprintf(stderr, "Could not load '%s' as a backend\n", dlpath);
+		*err = ERROR_IO;
+		goto RET;
+	}
+
+	WyrtBackend *be = GetProcAddress(dl, "wyrtBackend");
+	if(!be) {
+		fprintf(stderr, "Could not load Backend\n");
+		*err = ERROR_IO;
+		goto RET;
+	}
+#else
+	void *dl = dlopen(dlpath, RTLD_NOW);
+	if(!dl) {
+		fprintf(stderr, "Could not load '%s' as a backend\n", dlpath);
+		*err = ERROR_IO;
+		goto RET;
+	}
+
+	WyrtBackend *be = dlsym(dl, "wyrtBackend");
+	if(!be) {
+		fprintf(stderr, "Could not load Backend\n");
+		*err = ERROR_IO;
+		goto RET;
+	}
+#endif
+
+	WyrtContext *ctx = be->get_ctx(err);
+	if(*err) goto RET;
 
 	*cg = (CodeGen) {
 		.nodes = nodes,
@@ -36,12 +77,13 @@ void codegen_init(
 		.string_count = string_count,
 		.fn_count = 0,
 		.fn_sigs = NULL,
-		.gcc = gcc,
-		.named_types = NULL,
-		.named_types_gcc = NULL,
-		.named_type_count = 0,
+		.fns = NULL,
+		.dl = dl,
+		.be = *be,
+		.ctx = ctx,
 	};
-
+RET:
+	if(*err) *cg = (CodeGen) { 0 };
 	return;
 }
 
@@ -52,216 +94,16 @@ void codegen_clean(const CodeGen *cg)
 		free(cg->fn_sigs[i].arg_ids);
 	}
 	free(cg->fn_sigs);
-	if(cg->gcc) gcc_jit_context_release(cg->gcc);
+	if(cg->be.release_ctx) cg->be.release_ctx(cg->ctx);
+
+#ifdef _WIN32
+	if(cg->dl) FreeLibrary(cg->dl);
+#else
+	if(cg->dl) dlclose(cg->dl);
+#endif
 }
 
-static gcc_jit_location *gen_loc(gcc_jit_context *ctx, DebugInfo info)
-{
-	return gcc_jit_context_new_location(
-		ctx,
-		info.file,
-		info.line,
-		info.col	
-	);
-}
-
-static gcc_jit_type *get_named_type(CodeGen *cg, Type type, TypeContext *tc, Error *err)
-{
-	gcc_jit_type *ret = NULL;
-	for(size_t i = 0; i < cg->named_type_count; i++) {
-		if(types_are_equal(cg->named_types[i], type)) {
-			ret = cg->named_types_gcc[i];
-			goto RET;
-		}
-	}
-
-	char *arr_name = malloc(16);
-	CHECK_MALLOC(arr_name);
-
-	memcpy(arr_name, "_.0000000000000", 16);
-
-	int pos = 2;
-	for(size_t num = cg->named_type_count; num > 0; pos++, num /= 27) {
-		arr_name[pos] = 'A' + num % 27 - 1;
-	}
-	cg->named_type_count += 1;
-	cg->named_types = realloc(
-		cg->named_types,
-		sizeof(*cg->named_types) * cg->named_type_count
-	);
-	CHECK_MALLOC(cg->named_types);
-	cg->named_types_gcc = realloc(
-		cg->named_types_gcc,
-		sizeof(*cg->named_types_gcc) * cg->named_type_count
-	);	
-	CHECK_MALLOC(cg->named_types_gcc);
-	cg->named_type_names = realloc(
-		cg->named_type_names,
-		sizeof(*cg->named_type_names) * cg->named_type_count
-	);
-	CHECK_MALLOC(cg->named_type_names);
-
-	cg->named_type_names[cg->named_type_count - 1] = arr_name;
-	cg->named_types[cg->named_type_count - 1] = type;
-
-RET:
-	return ret;
-}
-
-static gcc_jit_type *gen_type(
-	CodeGen *cg,
-	Type type,
-	TypeContext *tc,
-	Error *err	
-)
-{
-	gcc_jit_type *ret = NULL;
-
-	type = type_resolve(tc, type);
-
-	switch(type.type) {
-	case TYPE_PRIMITIVE_U8:
-		ret = gcc_jit_context_get_type(cg->gcc, GCC_JIT_TYPE_UINT8_T);
-		break;
-	case TYPE_PRIMITIVE_U16:
-		ret = gcc_jit_context_get_type(cg->gcc, GCC_JIT_TYPE_UINT16_T);
-		break;
-	case TYPE_PRIMITIVE_U32:
-		ret = gcc_jit_context_get_type(cg->gcc, GCC_JIT_TYPE_UINT32_T);
-		break;
-	case TYPE_PRIMITIVE_U64:
-		ret = gcc_jit_context_get_type(cg->gcc, GCC_JIT_TYPE_UINT64_T);
-		break;
-	case TYPE_PRIMITIVE_S8:
-		ret = gcc_jit_context_get_type(cg->gcc, GCC_JIT_TYPE_INT8_T);
-		break;
-	case TYPE_PRIMITIVE_S16:
-		ret = gcc_jit_context_get_type(cg->gcc, GCC_JIT_TYPE_INT16_T);
-		break;
-	case TYPE_PRIMITIVE_S32:
-		ret = gcc_jit_context_get_type(cg->gcc, GCC_JIT_TYPE_INT32_T);
-		break;
-	case TYPE_PRIMITIVE_S64:
-		ret = gcc_jit_context_get_type(cg->gcc, GCC_JIT_TYPE_INT64_T);
-		break;
-	case TYPE_PRIMITIVE_VOID:
-		ret = gcc_jit_context_get_type(cg->gcc, GCC_JIT_TYPE_VOID);
-		break;
-
-	case TYPE_POINTER_CONST:
-	case TYPE_POINTER_ABYSS:
-	case TYPE_POINTER_VAR: {
-		gcc_jit_type *base = gen_type(cg, tc->types[type.pointer.base], tc, err);
-		if(*err) goto RET;
-
-		ret = gcc_jit_type_get_pointer(base);
-	} break;
-	
-	case TYPE_ARRAY: {
-		//Note: gccjit does not do array-decay
-		gcc_jit_type *elem = gen_type(cg, tc->types[type.array.base], tc, err);
-		if(*err) goto RET;
-
-		ret = gcc_jit_context_new_array_type(
-			cg->gcc,
-			NULL,
-			elem,
-			type.array.len
-		);
-	} break;
-
-	case TYPE_SLICE_CONST:
-	case TYPE_SLICE_ABYSS:
-	case TYPE_SLICE_VAR: {
-		ret = get_named_type(cg, type, tc, err);
-		if(*err) goto RET;
-		if(ret) goto RET;
-
-		size_t named_type_index = cg->named_type_count - 1;
-
-		gcc_jit_type *elem_type = gen_type(cg, tc->types[type.array.base], tc, err);
-		if(*err) goto RET;
-
-		gcc_jit_field *(fields[2]);
-
-	   	fields[0] = gcc_jit_context_new_field(
-			cg->gcc,
-			NULL,
-			gcc_jit_type_get_pointer(elem_type),
-			"ptr"
-		);
-
-		fields[1] = gcc_jit_context_new_field(
-			cg->gcc,
-			NULL,
-			gcc_jit_context_get_type(cg->gcc, GCC_JIT_TYPE_UINT64_T),
-			"len"
-		);
-
-		gcc_jit_struct *struct_ = gcc_jit_context_new_struct_type(
-			cg->gcc,
-			NULL,
-			cg->named_type_names[named_type_index],
-			2,
-			fields
-		);
-
-		ret = gcc_jit_struct_as_type(struct_);
-		cg->named_types_gcc[named_type_index] = ret;
-	} break;
-
-	case TYPE_STRUCT: {
-		ret = get_named_type(cg, type, tc, err);
-		if(*err) goto RET;
-		if(ret) goto RET;
-
-		size_t named_type_index = cg->named_type_count - 1;
-
-		gcc_jit_field **fields = malloc(sizeof(*fields) * type.struct_type.member_count);
-		CHECK_MALLOC(fields);
-
-		for(size_t i = 0; i < type.struct_type.member_count; i++) {
-			gcc_jit_type *member_type = gen_type(
-				cg,
-				tc->types[type.struct_type.member_types[i]],
-				tc,
-				err
-			);
-			if(*err) {
-				free(fields);
-				goto RET;
-			}
-
-			fields[i] = gcc_jit_context_new_field(
-				cg->gcc,
-				NULL,
-				member_type,
-				cg->identifiers[type.struct_type.member_name_ids[i]]
-			);
-		}
-
-		ret = gcc_jit_struct_as_type(gcc_jit_context_new_struct_type(
-				cg->gcc,
-				NULL,
-				cg->named_type_names[named_type_index],
-				type.struct_type.member_count,
-				fields
-		));
-		cg->named_types_gcc[named_type_index] = ret;
-		free(fields);
-	} break;
-
-	default:
-		fprintf(stderr, "[INTERNAL]: Cannot Generate Type #%d\n", type.type);
-		*err = ERROR_UNEXPECTED_DATA;
-		goto RET;	
-	}
-
-RET:
-	return ret;
-}
-
-static gcc_jit_function *gen_fnsig(
+static WyrtFunction *gen_fnsig(
 	CodeGen *cg,
 	FnSig *sig,
 	Scope *scope,
@@ -269,15 +111,13 @@ static gcc_jit_function *gen_fnsig(
 	Error *err
 )
 {
-	gcc_jit_function *fn = NULL;
+	WyrtFunction *fn = NULL;
 	DynArr args;
 	DynArr arg_ids;
-	DynArr arg_gccs;
+	DynArr arg_bes;
 	dynarr_init(&args, sizeof(Type));	
 	dynarr_init(&arg_ids, sizeof(size_t));
-	dynarr_init(&arg_gccs, sizeof(gcc_jit_param*));
-	StringBuilder arg_builder = { 0 };
-	gcc_jit_type *ret_gcc;
+	dynarr_init(&arg_bes, sizeof(WyrtParam*));
 
 	AstNode ident = cg->nodes[cg->nodes[i].fn_def.ident];
 	assert(ident.type == AST_IDENT);
@@ -308,10 +148,6 @@ static gcc_jit_function *gen_fnsig(
 	);
 	if(*err) goto RET;
 
-	ret_gcc = gen_type(cg, ret, &scope->tc, err);
-	if(*err) goto RET;
-
-
 	for(size_t i = 0; i < type.fn_type.arg_count; i++) {
 		Type arg_type = type_from_ast(
 			&scope->tc,
@@ -331,59 +167,17 @@ static gcc_jit_function *gen_fnsig(
 		dynarr_push(&arg_ids, &arg_id, err);
 		if(*err) goto RET;
 
-		if(arg_type.type == TYPE_SLICE_CONST
-			|| arg_type.type == TYPE_SLICE_ABYSS
-			|| arg_type.type == TYPE_SLICE_VAR
-		) {
-			gcc_jit_type *ptr_type = gcc_jit_type_get_pointer(gen_type(
-				cg,
-				scope->tc.types[arg_type.slice.base],
-				&scope->tc,
-				err
-			));
-			if(*err) goto RET;
+		WyrtParam *arg_be = cg->be.new_param(
+			cg->ctx,
+			&arg.debug.debug_info,
+			arg_type,
+			cg->identifiers[arg_id],
+			err
+		);
+		if(*err) goto RET;
 
-			arg_builder.count = 0;
-			string_builder_printf(&arg_builder, err, "%s.ptr", cg->identifiers[arg_id]);
-			if(*err) goto RET;
-
-			gcc_jit_param *ptr = gcc_jit_context_new_param(
-				cg->gcc,
-				gen_loc(cg->gcc, arg.debug.debug_info),
-				ptr_type,
-				arg_builder.str
-			);
-
-			dynarr_push(&arg_gccs, &ptr, err);
-			if(*err) goto RET;
-
-			arg_builder.count = 0;
-			string_builder_printf(&arg_builder, err, "%s.len", cg->identifiers[arg_id]);
-			if(*err) goto RET;
-
-			gcc_jit_param *len = gcc_jit_context_new_param(
-				cg->gcc,
-				gen_loc(cg->gcc, arg.debug.debug_info),
-				gcc_jit_context_get_type(cg->gcc, GCC_JIT_TYPE_UINT64_T),
-				arg_builder.str
-			);
-
-			dynarr_push(&arg_gccs, &len, err);
-			if(*err) goto RET;
-		} else {
-			gcc_jit_type *arg_type_gcc = gen_type(cg, arg_type, &scope->tc, err);
-			if(*err) goto RET;
-
-			gcc_jit_param *arg_gcc = gcc_jit_context_new_param(
-				cg->gcc,
-				gen_loc(cg->gcc, arg.debug.debug_info),
-				arg_type_gcc,
-				cg->identifiers[arg_id]
-			);
-
-			dynarr_push(&arg_gccs, &arg_gcc, err);
-			if(*err) goto RET;
-		}
+		dynarr_push(&arg_bes, &arg_be, err);
+		if(*err) goto RET;
 	}
 
 	*sig = (FnSig) {
@@ -395,31 +189,41 @@ static gcc_jit_function *gen_fnsig(
 		.arg_ids = arg_ids.data,
 	};
 
-	fn = gcc_jit_context_new_function(
-		cg->gcc,
-		gen_loc(cg->gcc, cg->nodes[i].debug.debug_info),
-		!imported ? GCC_JIT_FUNCTION_EXPORTED : GCC_JIT_FUNCTION_IMPORTED,
-		ret_gcc,
-		!imported ? cg->identifiers[id] : cg->strings[linkage_name],
-		arg_gccs.count,
-		arg_gccs.data,
-		false
+	fn = cg->be.new_function(
+		cg->ctx,
+		&cg->nodes[i].debug.debug_info,
+		ret,
+		(WyrtParam**)arg_bes.data,
+		arg_bes.count,
+		imported,
+		imported ? cg->strings[linkage_name] : cg->identifiers[id],
+		err
 	);
-
+	if(*err) goto RET;
+		
 RET:
 	if(*err) {
 		dynarr_clean(&args);
 		dynarr_clean(&arg_ids);
-		dynarr_clean(&arg_gccs);
+		dynarr_clean(&arg_bes);
 	}
-	if(arg_builder.str) free(arg_builder.str);
 
 	return fn;
 }
 
-static gcc_jit_rvalue *gen_cast(CodeGen *cg, Expr expr, Type type, TypeContext *tc, const DebugInfo *loc, Error *err)
+static Lvalue gen_lvalue(CodeGen *cg, size_t index, Scope *scope, Error *err);
+static Expr gen_fn_call(CodeGen *cg, AstNode expr, Scope *scope, Error *err);
+
+static WyrtRvalue *gen_cast(
+	CodeGen *cg,
+	Expr expr,
+	Type type,
+	TypeContext *tc,
+	const DebugInfo *loc,
+	Error *err
+)
 {
-	gcc_jit_rvalue *new;
+	WyrtRvalue *new;
 
 	switch(expr.type.type) {
 	case TYPE_PRIMITIVE_U8:
@@ -430,11 +234,12 @@ static gcc_jit_rvalue *gen_cast(CodeGen *cg, Expr expr, Type type, TypeContext *
 	case TYPE_PRIMITIVE_S16:
 	case TYPE_PRIMITIVE_S32:
 	case TYPE_PRIMITIVE_S64:
-		new = gcc_jit_context_new_cast(
-			cg->gcc,
-			gen_loc(cg->gcc, *loc),
+		new = cg->be.new_cast(
+			cg->ctx,
+			loc,
 			expr.expr,
-			gen_type(cg, type, tc, err)
+			type,
+			err
 		);
 		if(*err) goto RET;
 		break;
@@ -467,32 +272,33 @@ static gcc_jit_rvalue *gen_cast(CodeGen *cg, Expr expr, Type type, TypeContext *
 				expr.type.type
 			);
 
-			gcc_jit_type *u64_type = gen_type(cg, (Type) {.type = TYPE_PRIMITIVE_U64}, tc, err);
-			if(*err) goto RET;
-
-			gcc_jit_rvalue *(rvalues[2]);
-			rvalues[0] = gcc_jit_context_new_cast(
-				cg->gcc,
-				gen_loc(cg->gcc, *loc),
+			WyrtRvalue *(rvalues[2]);
+			rvalues[0] = cg->be.new_cast(
+				cg->ctx,
+				loc,
 				expr.expr,
-			  	gen_type(cg, ptr_to_elem, tc, err)
+				ptr_to_elem,
+				err
 			);
 			if(*err) goto RET;
 
-			rvalues[1] = gcc_jit_context_new_rvalue_from_long(
-				cg->gcc, 	
-				u64_type,
-				tc->types[expr.type.pointer.base].array.len
+			rvalues[1] = cg->be.rvalue_int_lit(
+				cg->ctx,
+				tc->types[expr.type.pointer.base].array.len,
+				(Type) {.type = TYPE_PRIMITIVE_U64},
+				err
 			);
+			if(*err) goto RET;
 
-			new = gcc_jit_context_new_struct_constructor(
-				cg->gcc,
-				NULL,
-				gen_type(cg, slice, tc, err),
+			new = cg->be.rvalue_struct_lit(
+				cg->ctx,
+				loc,
+				slice,
+				rvalues,
 				2,
-				NULL,
-				rvalues
+				err
 			);
+			if(*err) goto RET;
 			goto RET;
 		}
 		new = expr.expr;
@@ -514,10 +320,6 @@ RET:
 	return new;
 }	
 
-
-static Lvalue gen_lvalue(CodeGen *cg, size_t index, Scope *scope, Error *err);
-static Expr gen_fn_call(CodeGen *cg, AstNode expr, Scope *scope, Error *err);
-
 static Expr gen_expr(CodeGen *cg, Type expected, size_t index, Scope *scope, Error *err)
 {
 	AstNode expr = cg->nodes[index];
@@ -537,11 +339,7 @@ static Expr gen_expr(CodeGen *cg, Type expected, size_t index, Scope *scope, Err
 			ret.type.type = TYPE_PRIMITIVE_U64;
 		}
 
-		ret.expr = gcc_jit_context_new_rvalue_from_long(
-			cg->gcc,
-			gen_type(cg, ret.type, &scope->tc, err),
-			expr.int_lit.val
-		);
+		ret.expr = cg->be.rvalue_int_lit(cg->ctx, expr.int_lit.val, ret.type, err);
 		if(*err) goto RET;
 		break;
 
@@ -558,14 +356,14 @@ static Expr gen_expr(CodeGen *cg, Type expected, size_t index, Scope *scope, Err
 					*err = ERROR_UNEXPECTED_DATA;
 					goto RET;
 				}
-				ret.expr = gcc_jit_lvalue_as_rvalue(scope->gcc_vars[i]);
+				ret.expr = cg->be.rvalue_from_lvalue(scope->be_vars[i]);
 				ret.type = scope->vars[i].type;
 				goto RET;
 			}
 		}
 		for(size_t i = 0; i < scope->param_count; i++) {
 			if(scope->params[i].id == expr.ident.id) {
-				ret.expr = scope->gcc_params[i];
+				ret.expr = scope->be_params[i];
 				ret.type = scope->params[i].type;
 				goto RET;
 			}	
@@ -629,40 +427,22 @@ static Expr gen_expr(CodeGen *cg, Type expected, size_t index, Scope *scope, Err
 
 		if(rhs_compatible) {
 			ret.type = lhs.type;
-			rhs.expr = gcc_jit_context_new_cast(
-				cg->gcc,
-				gen_loc(cg->gcc, expr.debug.debug_info),
-				rhs.expr,
-				gen_type(cg, lhs.type, &scope->tc, err)
-			);
+			rhs.expr = cg->be.new_cast(cg->ctx, &expr.debug.debug_info, rhs.expr, lhs.type, err);
 			if(*err) goto RET;
 		} else {
 			ret.type = rhs.type;
-			lhs.expr = gcc_jit_context_new_cast(
-				cg->gcc,
-				gen_loc(cg->gcc, expr.debug.debug_info),
-				lhs.expr,
-				gen_type(cg, rhs.type, &scope->tc, err)
-			);
+			lhs.expr = cg->be.new_cast(cg->ctx, &expr.debug.debug_info, lhs.expr, rhs.type, err);
+			if(*err) goto RET;
 		}
 
-
-		enum gcc_jit_binary_op op;
-		switch(expr.type) {
-		case AST_MUL: op = GCC_JIT_BINARY_OP_MULT; break;
-		case AST_DIV: op = GCC_JIT_BINARY_OP_DIVIDE; break;
-		case AST_ADD: op = GCC_JIT_BINARY_OP_PLUS; break;
-		case AST_SUB: op = GCC_JIT_BINARY_OP_MINUS; break;
-		default: assert(0);
-		}
-
-		ret.expr = gcc_jit_context_new_binary_op(
-			cg->gcc,
-			gen_loc(cg->gcc, expr.debug.debug_info),
-			op,
-			gen_type(cg, ret.type, &scope->tc, err),
+		ret.expr = cg->be.rvalue_binary_op(
+			cg->ctx,
+			&expr.debug.debug_info,
+			expr.type,
+			ret.type,
 			lhs.expr,
-			rhs.expr
+			rhs.expr,
+			err
 		);
 		if(*err) goto RET;
 	} break;
@@ -677,10 +457,9 @@ static Expr gen_expr(CodeGen *cg, Type expected, size_t index, Scope *scope, Err
 		Expr ptr = gen_expr(cg, ptr_type, expr.deref.ptr, scope, err);
 		if(*err) goto RET;
 		
-		ret.expr = gcc_jit_lvalue_as_rvalue(gcc_jit_rvalue_dereference(
-				ptr.expr,
-				gen_loc(cg->gcc, expr.debug.debug_info)
-		));
+		WyrtLvalue *lval = cg->be.lvalue_deref(cg->ctx, &expr.debug.debug_info, ptr.expr, err);
+		if(*err) goto RET;
+		ret.expr = cg->be.rvalue_from_lvalue(lval);
 		ret.type = expected;
 	} break;
 	
@@ -688,10 +467,8 @@ static Expr gen_expr(CodeGen *cg, Type expected, size_t index, Scope *scope, Err
 		Lvalue val = gen_lvalue(cg, expr.addr.base, scope, err);
 		if(*err) goto RET;
 
-		ret.expr = gcc_jit_lvalue_get_address(
-			val.lvalue,
-			gen_loc(cg->gcc, expr.debug.debug_info)
-		);
+		ret.expr = cg->be.rvalue_address(cg->ctx, &expr.debug.debug_info, val.lvalue, err);
+		if(*err) goto RET;
 
 		ret.type = types_get_ptr(
 			&scope->tc,
@@ -711,6 +488,7 @@ static Expr gen_expr(CodeGen *cg, Type expected, size_t index, Scope *scope, Err
 			*err = ERROR_UNEXPECTED_DATA;
 			goto RET;
 		}
+
 		if(expected.array.len && expected.array.len != expr.array_lit.elem_count) {
 			wyrt_diag(
 				stderr, cg->identifiers, cg->strings, &scope->tc,
@@ -725,7 +503,7 @@ static Expr gen_expr(CodeGen *cg, Type expected, size_t index, Scope *scope, Err
 
 		Type elem_type = scope->tc.types[expected.array.base];
 
-		gcc_jit_rvalue **elems = malloc(sizeof(*elems) * expr.array_lit.elem_count);
+		WyrtRvalue **elems = malloc(sizeof(*elems) * expr.array_lit.elem_count);
 		CHECK_MALLOC(elems);
 
 		for(size_t i = 0; i < expr.array_lit.elem_count; i++) {
@@ -739,13 +517,16 @@ static Expr gen_expr(CodeGen *cg, Type expected, size_t index, Scope *scope, Err
 			if(*err) goto ARRAY_LIT_CLEAN;
 		}
 
-		ret.expr = gcc_jit_context_new_array_constructor(
-			cg->gcc,
-			gen_loc(cg->gcc, expr.debug.debug_info),
-			gen_type(cg, expected, &scope->tc, err),
-			expected.array.len,
-			elems
+		ret.expr = cg->be.rvalue_array_lit(
+			cg->ctx,
+			&expr.debug.debug_info,
+			expected,
+			elems,
+			expr.array_lit.elem_count,
+			err
 		);
+		if(*err) goto RET;
+
 		ret.type = (Type) {
 			.array = {
 				.type = TYPE_ARRAY,
@@ -799,31 +580,16 @@ ARRAY_LIT_CLEAN:
 		);
 		if(*err) goto RET;
 
-		gcc_jit_rvalue *ptr = arr.expr;
-		gcc_jit_location *loc = gen_loc(cg->gcc, expr.debug.debug_info);
+		WyrtLvalue *subs = cg->be.lvalue_subscript(
+			cg->ctx,
+			&expr.debug.debug_info,
+			arr.expr,
+			index.expr,
+			err
+		);
+		if(*err) goto RET;
 
-		if(arr.type.type == TYPE_SLICE_CONST
-			|| arr.type.type == TYPE_SLICE_VAR
-		) {
-			gcc_jit_type *slice_gcc = get_named_type(cg, arr.type, &scope->tc, err);
-			if(*err) goto RET;
-
-			gcc_jit_struct *slice_struct = gcc_jit_type_is_struct(slice_gcc);
-
-			ptr = gcc_jit_rvalue_access_field(
-				arr.expr,
-				loc,
-				gcc_jit_struct_get_field(slice_struct, 0)
-			);
-		}
-
-		ret.expr = gcc_jit_lvalue_as_rvalue(gcc_jit_context_new_array_access(
-			cg->gcc,
-			loc,
-			ptr,
-			index.expr
-		));
-
+		ret.expr = cg->be.rvalue_from_lvalue(subs);
 		ret.type = scope->tc.types[arr.type.pointer.base];
 	} break;
 
@@ -837,6 +603,7 @@ ARRAY_LIT_CLEAN:
 			*err = ERROR_UNEXPECTED_DATA;
 			goto RET;
 		}
+
 		if(expected.type != TYPE_STRUCT) {
 			wyrt_diag(
 				stderr, cg->identifiers, cg->strings, &scope->tc,
@@ -848,57 +615,80 @@ ARRAY_LIT_CLEAN:
 			goto RET;
 		}
 
-		gcc_jit_rvalue **members = malloc(sizeof(*members) * expected.struct_type.member_count);
+		if(expr.struct_lit.member_count > expected.struct_type.member_count) {
+			wyrt_diag(
+				stderr, cg->identifiers, cg->strings, &scope->tc,
+				"Cannot Coerce Struct-Literal with %zi members to struct Type '%t' with %zi members at %l\n",
+				expr.struct_lit.member_count,
+				expected,
+				expected.struct_type.member_count,
+				&expr.debug.debug_info
+			);
+			*err = ERROR_UNEXPECTED_DATA;
+			goto RET;
+		}
+
+		WyrtRvalue **members = malloc(sizeof(*members) * expected.struct_type.member_count);
 		CHECK_MALLOC(members);
-		gcc_jit_field **fields = malloc(sizeof(*fields) * expected.struct_type.member_count);
-		if(!fields) {
-			fprintf(stderr, "OOM!\n");
-			free(members);
-			*err = ERROR_OUT_OF_MEMORY;
-			goto RET;
-		}
 
-		gcc_jit_type *type = gen_type(
-			cg,
-			expected,
-			&scope->tc,
-			err
-		);
-		if(*err) {
-			free(members);
-			free(fields);
-			goto RET;
-		}
-
-		gcc_jit_struct *struct_gcc = gcc_jit_type_is_struct(type);
-		assert(struct_gcc);
-
-		for(size_t i = 0; i < expected.struct_type.member_count; i++) {
-			members[i] = gen_expr(
-				cg,
-				scope->tc.types[expected.struct_type.member_types[i]],
-				expr.struct_lit.member_values[i],
-				scope,
-				err
-			).expr;
-			if(*err) {
-				free(members);
-				free(fields);
-				goto RET;
+		for(size_t i = 0; i < expr.struct_lit.member_count; i++) {
+			bool found = false;
+			size_t id = expr.struct_lit.member_name_ids[i];
+			for(size_t j = 0; j < expected.struct_type.member_count; j++) {
+				if(expected.struct_type.member_name_ids[j] == id) {
+					members[j] = gen_expr(
+						cg,
+						scope->tc.types[expected.struct_type.member_types[i]],
+						expr.struct_lit.member_values[i],
+						scope,
+						err
+					).expr;
+					if(*err) {
+						free(members);
+						goto RET;
+					}
+					found = true;
+					break;
+				}
 			}
 
-			fields[i] = gcc_jit_struct_get_field(struct_gcc, i);
+			if(!found) {
+				wyrt_diag(
+					stderr, cg->identifiers, cg->strings, &scope->tc,
+					"No member '%i' in Struct-Type '%t' at %l\n",
+					id,
+					expected
+				);
+				*err = ERROR_UNEXPECTED_DATA;
+				free(members);
+				goto RET;
+			}
 		}
 
-		ret.expr = gcc_jit_context_new_struct_constructor(
-			cg->gcc,
-			gen_loc(cg->gcc, expr.debug.debug_info),
-			type,
-			expected.struct_type.member_count,
-			fields,
-			members
-		);
+		for(size_t i = 0; i < expected.struct_type.member_count; i++) {
+			if(!members[i]) {
+				members[i] = cg->be.rvalue_null(
+					cg->ctx,
+					scope->tc.types[expected.struct_type.member_types[i]],
+					err
+				);
 
+				if(*err) {
+					free(members);
+					goto RET;
+				}
+			}
+		}
+
+		ret.expr = cg->be.rvalue_struct_lit(
+			cg->ctx,
+			&expr.debug.debug_info,
+			expected,
+			members,
+			expected.struct_type.member_count,
+			err
+		);
+		if(*err) goto RET;
 		ret.type = expected;
 
 		free(members);
@@ -924,25 +714,23 @@ ARRAY_LIT_CLEAN:
 			goto RET;
 		}
 
-		gcc_jit_type *parent_type = gen_type(
-			cg,
-			parent.type,
-			&scope->tc,
-			err
-		);
-		if(*err) goto RET;
 
-		gcc_jit_struct *struct_gcc = gcc_jit_type_is_struct(parent_type);
-		assert(struct_gcc);
-
-		gcc_jit_field *field = NULL;
+		ret.expr = NULL;
 		for(size_t i = 0; i < parent.type.struct_type.member_count; i++) {
 			if(parent.type.struct_type.member_name_ids[i] == expr.struct_access.member_id) {
-				field = gcc_jit_struct_get_field(struct_gcc, i);
+				ret.expr = cg->be.rvalue_field(
+					cg->ctx,
+					&expr.debug.debug_info,
+					parent.expr,
+					cg->identifiers[parent.type.struct_type.member_name_ids[i]],
+					err
+				);
+				if(*err) goto RET;
 				ret.type = scope->tc.types[parent.type.struct_type.member_types[i]];
 			}
 		}
-		if(!field) {
+
+		if(!ret.expr) {
 			wyrt_diag(
 				stderr, cg->identifiers, cg->strings, &scope->tc,
 				"No Members '%i' in struct '%t' at %l\n",
@@ -953,13 +741,6 @@ ARRAY_LIT_CLEAN:
 			*err = ERROR_UNEXPECTED_DATA;
 			goto RET;
 		}
-
-		ret.expr = gcc_jit_rvalue_access_field(
-			parent.expr,
-			gen_loc(cg->gcc, expr.debug.debug_info),
-			field
-		);
-
 	} break;
 
 	case AST_STRING_LIT:
@@ -967,56 +748,44 @@ ARRAY_LIT_CLEAN:
 		ret.type = types_get_ptr(&scope->tc, (Type) {.type = TYPE_PRIMITIVE_U8}, TYPE_POINTER_CONST);
 		ret.type.type = TYPE_SLICE_CONST;
 
-		gcc_jit_type *slice = gen_type(cg, ret.type, &scope->tc, err);
+		WyrtRvalue *(vals[2]);
+		vals[0] = cg->be.rvalue_cstring_lit(
+			cg->ctx,
+			&expr.debug.debug_info,
+			cg->strings[expr.string_lit.id],
+			err
+		);
 		if(*err) goto RET;
 
-		gcc_jit_struct *struct_gcc = gcc_jit_type_is_struct(slice);
-		assert(struct_gcc);
-
-		gcc_jit_rvalue *(vals[2]);
-		vals[0] = gcc_jit_context_new_string_literal(
-			cg->gcc,
-			cg->strings[expr.string_lit.id]
+		vals[1] = cg->be.rvalue_int_lit(
+			cg->ctx,
+			strlen(cg->strings[expr.string_lit.id]),
+			(Type) {.type = TYPE_PRIMITIVE_U64},
+			err
 		);
+		if(*err) goto RET;
 
-		vals[1] = gcc_jit_context_new_rvalue_from_long(
-			cg->gcc,
-			gcc_jit_context_get_type(cg->gcc, GCC_JIT_TYPE_UINT64_T),
-			strlen(cg->strings[expr.string_lit.id])
-		);
-
-		gcc_jit_field *(fields[2]) = {
-			gcc_jit_struct_get_field(struct_gcc, 0),
-			gcc_jit_struct_get_field(struct_gcc, 1),
-		};
-
-		ret.expr = gcc_jit_context_new_struct_constructor(
-			cg->gcc,
-			gen_loc(cg->gcc, expr.debug.debug_info),
-			slice,
+		ret.expr = cg->be.rvalue_struct_lit(
+			cg->ctx,
+			&expr.debug.debug_info,
+			ret.type,
+			vals,
 			2,
-			fields,
-			vals
+			err
 		);
+		if(*err) goto RET;
 	} break;
 
 	case AST_CSTRING_LIT: {
 		ret.type = types_get_ptr(&scope->tc, (Type) {.type = TYPE_PRIMITIVE_U8}, TYPE_POINTER_CONST);
 
-		gcc_jit_type *type = gen_type(cg, ret.type, &scope->tc, err);
-		if(*err) goto RET;
-
-		gcc_jit_rvalue *str = gcc_jit_context_new_string_literal(
-			cg->gcc,
-			cg->strings[expr.string_lit.id]
+		ret.expr = cg->be.rvalue_cstring_lit(
+			cg->ctx,
+			&expr.debug.debug_info,
+			cg->strings[expr.string_lit.id],
+			err
 		);
-		
-		ret.expr = gcc_jit_context_new_cast(
-			cg->gcc,
-			gen_loc(cg->gcc, expr.debug.debug_info),
-			str,
-			type
-		);
+		if(*err) goto RET;	
 	} break;
 
 	case AST_ARROW: {
@@ -1056,25 +825,22 @@ ARRAY_LIT_CLEAN:
 			goto RET;
 		}
 
-		gcc_jit_type *parent_type = gen_type(
-			cg,
-			parent_struct,
-			&scope->tc,
-			err
-		);
-		if(*err) goto RET;
-
-		gcc_jit_struct *struct_gcc = gcc_jit_type_is_struct(parent_type);
-		assert(struct_gcc);
-
-		gcc_jit_field *field = NULL;
+		ret.expr = NULL;
 		for(size_t i = 0; i < parent_struct.struct_type.member_count; i++) {
 			if(parent_struct.struct_type.member_name_ids[i] == expr.struct_access.member_id) {
-				field = gcc_jit_struct_get_field(struct_gcc, i);
+				WyrtLvalue *lval = cg->be.lvalue_deref_field(
+					cg->ctx,
+					&expr.debug.debug_info,
+					parent.expr,
+					cg->identifiers[expr.struct_access.member_id],
+					err
+				);
+				if(*err) goto RET;
+				ret.expr = cg->be.rvalue_from_lvalue(lval);
 				ret.type = scope->tc.types[parent_struct.struct_type.member_types[i]];
 			}
 		}
-		if(!field) {
+		if(!ret.expr) {
 			wyrt_diag(
 				stderr, cg->identifiers, cg->strings, &scope->tc,
 				"No Members '%i' in struct '%t' at %l\n",
@@ -1085,12 +851,6 @@ ARRAY_LIT_CLEAN:
 			*err = ERROR_UNEXPECTED_DATA;
 			goto RET;
 		}
-
-		ret.expr = gcc_jit_lvalue_as_rvalue(gcc_jit_rvalue_dereference_field(
-			parent.expr,
-			gen_loc(cg->gcc, expr.debug.debug_info),
-			field
-		));
 	} break;
 
 	default:
@@ -1132,11 +892,11 @@ RET_FAIL:
 static Expr gen_fn_call(CodeGen *cg, AstNode expr, Scope *scope, Error *err)
 {
 	Expr ret;
-	gcc_jit_rvalue **args = NULL;
+	WyrtRvalue **args = NULL;
 
 	bool found = false;
 	FnSig sig;
-	gcc_jit_function *fn;
+	WyrtFunction *fn;
 	for(size_t i = 0; i < cg->fn_count; i++) {
 		if(cg->fn_sigs[i].id == expr.fn_call.fn_id) {
 			found = true;
@@ -1168,72 +928,41 @@ static Expr gen_fn_call(CodeGen *cg, AstNode expr, Scope *scope, Error *err)
 		goto RET;	
 	}
 
-	args = malloc(gcc_jit_function_get_param_count(fn) * sizeof(gcc_jit_rvalue*));
+	args = malloc(sig.arg_count * sizeof(WyrtRvalue*));
 	CHECK_MALLOC(args);
 
-	int additional = 0;
 	for(size_t i = 0; i < sig.arg_count; i++) {
 		Expr arg = gen_expr(cg, sig.args[i], expr.fn_call.args[i], scope, err);
 		if(*err) goto RET;
-		if(arg.type.type == TYPE_SLICE_CONST
-			|| arg.type.type == TYPE_SLICE_ABYSS
-			|| arg.type.type == TYPE_SLICE_VAR
-		) {
-			additional += 1;
 
-			gcc_jit_location *loc = gen_loc(
-				cg->gcc,
-				cg->nodes[expr.fn_call.args[i]].debug.debug_info
-			);
-
-			gcc_jit_type *slice_type = get_named_type(cg, arg.type, &scope->tc, err);
-			if(*err) goto RET;
-
-			gcc_jit_struct *slice_struct = gcc_jit_type_is_struct(slice_type);
-
-			gcc_jit_field *ptr = gcc_jit_struct_get_field(slice_struct, 0);
-			gcc_jit_field *len = gcc_jit_struct_get_field(slice_struct, 1);
-
-			args[i+additional-1] = gcc_jit_rvalue_access_field(
-				arg.expr,
-				loc,
-				ptr
-			);
-
-			args[i+additional] = gcc_jit_rvalue_access_field(
-				arg.expr,
-				loc,
-				len
-			);
-		} else {
-			args[i+additional] = arg.expr;
-		}
+		args[i] = arg.expr;
 	}
 
-	ret.expr = gcc_jit_context_new_call(
-		cg->gcc,
-		gen_loc(cg->gcc, expr.debug.debug_info),
+	ret.expr = cg->be.rvalue_fn_call(
+		cg->ctx,
+		&expr.debug.debug_info,
 		fn,
-		sig.arg_count+additional,
-		args
+		args,
+		sig.arg_count,
+		err
 	);
-	ret.type = sig.ret;
+	if(*err) goto RET;
 
 RET:
 	if(args) free(args);
 	return ret;
 }
 
-static gcc_jit_lvalue *gen_var_decl(
+static WyrtLvalue *gen_var_decl(
 	CodeGen *cg,
 	const AstNode *statement,
-	gcc_jit_function *fn,
+	WyrtBlock *block,
 	Var *var,
 	Scope *scope,
 	Error *err
 )
 {
-	gcc_jit_lvalue *gcc_var = NULL;
+	WyrtLvalue *be_var = NULL;
 
 	Type type = type_from_ast(&scope->tc, cg->nodes, statement->var_decl.data_type, err);
 	if(*err) goto RET;
@@ -1266,9 +995,6 @@ static gcc_jit_lvalue *gen_var_decl(
 		}
 	}
 
-	gcc_jit_type *gcc_type = gen_type(cg, type, &scope->tc, err);
-	if(*err) goto RET;
-
 	*var = (Var) {
 		.id = statement->var_decl.id,
 		.type = type,
@@ -1276,16 +1002,18 @@ static gcc_jit_lvalue *gen_var_decl(
 		.declared = false,
 	};
 
-	gcc_var = gcc_jit_function_new_local(
-		fn,
-		gen_loc(cg->gcc, statement->debug.debug_info),
-		gcc_type,
-		cg->identifiers[statement->var_decl.id]
+	be_var = cg->be.block_new_variable(
+		cg->ctx,
+		&statement->debug.debug_info,
+		block,
+		type,
+		cg->identifiers[statement->var_decl.id],
+		err
 	);
-
+	if(*err) goto RET;
 
 RET:
-	return gcc_var;
+	return be_var;
 }
 
 static Lvalue gen_lvalue(CodeGen *cg, size_t index, Scope *scope, Error *err)
@@ -1309,7 +1037,7 @@ static Lvalue gen_lvalue(CodeGen *cg, size_t index, Scope *scope, Error *err)
 				}
 
 				ret.type = scope->vars[i].type;
-				ret.lvalue = scope->gcc_vars[i];
+				ret.lvalue = scope->be_vars[i];
 				ret.mut = scope->vars[i].mut;
 				ret.read = true;
 				goto RET;
@@ -1343,7 +1071,13 @@ static Lvalue gen_lvalue(CodeGen *cg, size_t index, Scope *scope, Error *err)
 			goto RET;
 		}
 
-		ret.lvalue = gcc_jit_rvalue_dereference(ptr.expr, gen_loc(cg->gcc, var.debug.debug_info));
+		ret.lvalue = cg->be.lvalue_deref(
+			cg->ctx,
+			&var.debug.debug_info,
+			ptr.expr,
+			err
+		);
+		if(*err) goto RET;
 		ret.type = scope->tc.types[ptr.type.pointer.base];
 		ret.mut = !(ptr.type.type == TYPE_POINTER_CONST);
 		ret.read = !(ptr.type.type == TYPE_POINTER_ABYSS);
@@ -1369,21 +1103,10 @@ static Lvalue gen_lvalue(CodeGen *cg, size_t index, Scope *scope, Error *err)
 			goto RET;
 		}
 
-		gcc_jit_type *parent_type = gen_type(
-			cg,
-			parent.type,
-			&scope->tc,
-			err
-		);
-		if(*err) goto RET;
-
-		gcc_jit_struct *struct_gcc = gcc_jit_type_is_struct(parent_type);
-		assert(struct_gcc);
-
-		gcc_jit_field *field = NULL;
+		const char *field = NULL;
 		for(size_t i = 0; i < parent.type.struct_type.member_count; i++) {
 			if(parent.type.struct_type.member_name_ids[i] == var.struct_access.member_id) {
-				field = gcc_jit_struct_get_field(struct_gcc, i);
+				field = cg->identifiers[var.struct_access.member_id];
 				ret.type = scope->tc.types[parent.type.struct_type.member_types[i]];
 			}
 		}
@@ -1400,11 +1123,14 @@ static Lvalue gen_lvalue(CodeGen *cg, size_t index, Scope *scope, Error *err)
 			goto RET;
 		}
 
-		ret.lvalue = gcc_jit_lvalue_access_field(
+		ret.lvalue = cg->be.lvalue_field(
+			cg->ctx,
+			&var.debug.debug_info,
 			parent.lvalue,
-			gen_loc(cg->gcc, var.debug.debug_info),
-			field
+			cg->identifiers[var.struct_access.member_id],
+			err
 		);
+		if(*err) goto RET;
 		ret.mut = parent.mut;
 		ret.read = parent.read;
 	} break;
@@ -1439,37 +1165,15 @@ static Lvalue gen_lvalue(CodeGen *cg, size_t index, Scope *scope, Error *err)
 		);
 		if(*err) goto RET;
 
-		gcc_jit_rvalue *arr_gcc = arr.expr;
-		if(arr.type.type == TYPE_SLICE_CONST
-			|| arr.type.type == TYPE_SLICE_ABYSS
-			|| arr.type.type == TYPE_SLICE_VAR
-		) {
-			gcc_jit_type *slice_gcc = gen_type(
-				cg,
-				arr.type,
-				&scope->tc,
-				err
-			);
-			if(*err) goto RET;
-
-			gcc_jit_struct *struct_gcc = gcc_jit_type_is_struct(slice_gcc);
-			assert(struct_gcc);
-
-			gcc_jit_field *ptr = gcc_jit_struct_get_field(struct_gcc, 0);
-
-			arr_gcc = gcc_jit_rvalue_access_field(
-				arr.expr,
-				gen_loc(cg->gcc, var.debug.debug_info),
-				ptr
-			);
-		}
-
-		ret.lvalue = gcc_jit_context_new_array_access(
-			cg->gcc,
-			gen_loc(cg->gcc, var.debug.debug_info),
-			arr_gcc,
-			index.expr
+		ret.lvalue = cg->be.lvalue_subscript(
+			cg->ctx,
+			&var.debug.debug_info,
+			arr.expr,
+			index.expr,
+			err
 		);
+		if(*err) goto RET;
+
 		switch(arr.type.type) {
 		case TYPE_POINTER_CONST:
 		case TYPE_SLICE_CONST:
@@ -1536,21 +1240,10 @@ static Lvalue gen_lvalue(CodeGen *cg, size_t index, Scope *scope, Error *err)
 			goto RET;
 		}
 
-		gcc_jit_type *parent_type = gen_type(
-			cg,
-			parent_struct,
-			&scope->tc,
-			err
-		);
-		if(*err) goto RET;
-
-		gcc_jit_struct *struct_gcc = gcc_jit_type_is_struct(parent_type);
-		assert(struct_gcc);
-
-		gcc_jit_field *field = NULL;
+		const char *field = NULL;
 		for(size_t i = 0; i < parent_struct.struct_type.member_count; i++) {
 			if(parent_struct.struct_type.member_name_ids[i] == var.struct_access.member_id) {
-				field = gcc_jit_struct_get_field(struct_gcc, i);
+				field = cg->identifiers[var.struct_access.member_id];
 				ret.type = scope->tc.types[parent_struct.struct_type.member_types[i]];
 			}
 		}
@@ -1567,11 +1260,14 @@ static Lvalue gen_lvalue(CodeGen *cg, size_t index, Scope *scope, Error *err)
 			goto RET;
 		}
 
-		ret.lvalue = gcc_jit_rvalue_dereference_field(
+		ret.lvalue = cg->be.lvalue_deref_field(
+			cg->ctx,
+			&var.debug.debug_info,
 			parent.expr,
-			gen_loc(cg->gcc, var.debug.debug_info),
-			field
+			field,
+			err
 		);
+		if(*err) goto RET;
 		ret.mut = !(parent.type.type == TYPE_POINTER_CONST);
 		ret.read = !(parent.type.type == TYPE_POINTER_ABYSS);
 	} break;
@@ -1596,7 +1292,7 @@ RET_FAIL:
 	return ret;
 }
 
-static void gen_fn(CodeGen *cg, FnSig sig, size_t index, gcc_jit_function *fn, const Scope *global, Error *err)
+static void gen_fn(CodeGen *cg, FnSig sig, size_t index, WyrtFunction *fn, const Scope *global, Error *err)
 {
 	const AstNode def = cg->nodes[index];
 	assert(def.type == AST_FN_DEF);
@@ -1604,64 +1300,33 @@ static void gen_fn(CodeGen *cg, FnSig sig, size_t index, gcc_jit_function *fn, c
 	const AstNode block = cg->nodes[def.fn_def.block];
 	if(block.type == AST_EXTERN) return;
 	
-	DynArr gcc_vars;
+	DynArr be_vars;
 	DynArr vars;
-	dynarr_init(&gcc_vars, sizeof(gcc_jit_lvalue*));
+	dynarr_init(&be_vars, sizeof(WyrtLvalue*));
 	dynarr_init(&vars, sizeof(Var));
 
 	Scope scope;
 	scope_init(&scope, global, err);
 	if(*err) goto RET;
 
-	//TODO: SLICE ARGUMENTS
-	scope.gcc_params = malloc(sig.arg_count * sizeof(gcc_jit_rvalue*));	
-	CHECK_MALLOC(scope.gcc_params);
+	scope.be_params = malloc(sig.arg_count * sizeof(WyrtRvalue*));	
+	CHECK_MALLOC(scope.be_params);
 	scope.params = malloc(sig.arg_count * sizeof(Var));
 	CHECK_MALLOC(scope.params);
 	scope.param_count = sig.arg_count;
 
 	assert(block.type == AST_BLOCK);
 
-	size_t additional = 0;
 	for(size_t i = 0; i < sig.arg_count; i++) {
-		if(sig.args[i].type == TYPE_SLICE_CONST
-			|| sig.args[i].type == TYPE_SLICE_ABYSS
-			|| sig.args[i].type == TYPE_SLICE_VAR
-		) {
-			gcc_jit_rvalue *(values[2]);
-			
-			values[0] = gcc_jit_param_as_rvalue(
-				gcc_jit_function_get_param(fn, i+additional)
-			);	
-
-			values[1] = gcc_jit_param_as_rvalue(
-				gcc_jit_function_get_param(fn, i+additional+1)
-			);
-
-			gcc_jit_type *slice_gcc = gen_type(cg, sig.args[i], &scope.tc, err);
-			if(*err) goto RET;
-
-			gcc_jit_struct *slice_struct = gcc_jit_type_is_struct(slice_gcc);
-			gcc_jit_field *(fields[2]);
-			fields[0] = gcc_jit_struct_get_field(slice_struct, 0);
-			fields[1] = gcc_jit_struct_get_field(slice_struct, 1);
-
-			scope.gcc_params[i] = gcc_jit_context_new_struct_constructor(
-				cg->gcc,
-				gen_loc(cg->gcc, def.debug.debug_info),
-				slice_gcc,
-				2,
-				fields,
-				values
-			);
-
-			additional += 1;
-		} else {
-			scope.gcc_params[i] = gcc_jit_param_as_rvalue(
-				gcc_jit_function_get_param(fn, i)
-			);	
-		}
-
+		WyrtParam *param = cg->be.function_get_param(
+			cg->ctx,
+			fn,
+			i,
+			err
+		);
+		if(*err) goto RET;
+		scope.be_params[i] = cg->be.rvalue_from_param(param);
+		
 		scope.params[i] = (Var) {
 			.id = sig.arg_ids[i],
 			.type = sig.args[i],
@@ -1670,39 +1335,44 @@ static void gen_fn(CodeGen *cg, FnSig sig, size_t index, gcc_jit_function *fn, c
 		};
 	}
 
+	WyrtBlock *be_block = cg->be.new_block(
+		cg->ctx,
+		fn,
+		err
+	);
+	if(*err) goto RET;
+
 	for(size_t i = 0; i < block.block.statement_count; i++) {
 		const AstNode statement = cg->nodes[block.block.statements[i]];
 
 		if(statement.type == AST_VAR_DECL) {
 			Var var;
-			gcc_jit_lvalue *gcc_var = gen_var_decl(cg, &statement, fn, &var, &scope, err);
+			WyrtLvalue *be_var = gen_var_decl(cg, &statement, be_block, &var, &scope, err);
 			if(*err) {
 				dynarr_clean(&vars);
-				dynarr_clean(&gcc_vars);
+				dynarr_clean(&be_vars);
 				goto RET;
 			}
 
-			dynarr_push(&gcc_vars, &gcc_var, err);
+			dynarr_push(&be_vars, &be_var, err);
 			if(*err) {
 				dynarr_clean(&vars);
-				dynarr_clean(&gcc_vars);
+				dynarr_clean(&be_vars);
 				goto RET;
 			}
 
 			dynarr_push(&vars, &var, err);
 			if(*err) {
 				dynarr_clean(&vars);
-				dynarr_clean(&gcc_vars);
+				dynarr_clean(&be_vars);
 				goto RET;
 			}
 		}
 	}
 
-	scope.gcc_vars = gcc_vars.data;
+	scope.be_vars = be_vars.data;
 	scope.vars = vars.data;
 	scope.var_count = vars.count;
-
-	gcc_jit_block *gcc_block = gcc_jit_function_new_block(fn, ".entry");
 
 	size_t varnum = 0;
 	bool returned = false;
@@ -1720,11 +1390,14 @@ static void gen_fn(CodeGen *cg, FnSig sig, size_t index, gcc_jit_function *fn, c
 			);
 			if(*err) goto RET;
 						
-			gcc_jit_block_add_eval(
-				gcc_block,
-				gen_loc(cg->gcc, statement.debug.debug_info),
-				expr.expr
+			cg->be.block_add_eval(
+				cg->ctx,
+				&statement.debug.debug_info,
+				be_block,
+				expr.expr,
+				err
 			);
+			if(*err) goto RET;
 		} break;
 
 		case AST_FN_CALL: {
@@ -1744,11 +1417,14 @@ static void gen_fn(CodeGen *cg, FnSig sig, size_t index, gcc_jit_function *fn, c
 					}
 					Expr val = gen_fn_call(cg, statement, &scope, err);
 					if(*err) goto RET;
-					gcc_jit_block_add_eval(
-						gcc_block,
-						gen_loc(cg->gcc, statement.debug.debug_info),
-						val.expr
+					cg->be.block_add_eval(
+						cg->ctx,
+						&statement.debug.debug_info,
+						be_block,
+						val.expr,
+						err
 					);
+					if(*err) goto RET;
 					found = true;
 					break;
 				}
@@ -1777,12 +1453,15 @@ static void gen_fn(CodeGen *cg, FnSig sig, size_t index, gcc_jit_function *fn, c
 				);
 				if(*err) goto RET;
 
-				gcc_jit_block_add_assignment(
-					gcc_block,
-					gen_loc(cg->gcc, statement.debug.debug_info),
-					scope.gcc_vars[i],
-					expr.expr
+				cg->be.block_add_assign(
+					cg->ctx,
+					&statement.debug.debug_info,
+					be_block,
+					scope.be_vars[i],
+					expr.expr,
+					err
 				);
+				if(*err) goto RET;
 			} else {
 				if(!scope.vars[varnum].mut) {
 					fprintf(stderr, "Error: const Variable uninitialized at ");
@@ -1823,27 +1502,21 @@ static void gen_fn(CodeGen *cg, FnSig sig, size_t index, gcc_jit_function *fn, c
 			);
 			if(*err) goto RET;
 
-			gcc_jit_block_add_assignment(
-				gcc_block,
-				gen_loc(cg->gcc, statement.debug.debug_info),
+			cg->be.block_add_assign(
+				cg->ctx,
+				&statement.debug.debug_info,
+				be_block,
 				lhs.lvalue,
-				rhs.expr
+				rhs.expr,
+				err
 			);
+			if(*err) goto RET;
 		} break;
 
 		case AST_ADD_ASSIGN:
 		case AST_SUB_ASSIGN:
 		case AST_MUL_ASSIGN:
 		case AST_DIV_ASSIGN: {
-			enum gcc_jit_binary_op op;
-			switch(statement.type) {
-			case AST_ADD_ASSIGN: op = GCC_JIT_BINARY_OP_PLUS; break;
-			case AST_SUB_ASSIGN: op = GCC_JIT_BINARY_OP_MINUS; break;
-			case AST_MUL_ASSIGN: op = GCC_JIT_BINARY_OP_MULT; break;
-			case AST_DIV_ASSIGN: op = GCC_JIT_BINARY_OP_DIVIDE; break;
-			default: assert(0);
-			}
-
 			Lvalue lhs = gen_lvalue(
 				cg,
 				statement.assign.var,
@@ -1871,13 +1544,16 @@ static void gen_fn(CodeGen *cg, FnSig sig, size_t index, gcc_jit_function *fn, c
 			);
 			if(*err) goto RET;
 
-			gcc_jit_block_add_assignment_op(
-				gcc_block,
-				gen_loc(cg->gcc, statement.debug.debug_info),
+			cg->be.block_add_compound_assign(
+				cg->ctx,
+				&statement.debug.debug_info,
+				be_block,
 				lhs.lvalue,
-				op,
-				rhs.expr
+				rhs.expr,
+				statement.type,
+				err
 			);
+			if(*err) goto RET;
 		} break;
 		
 		case AST_RET:
@@ -1891,19 +1567,26 @@ static void gen_fn(CodeGen *cg, FnSig sig, size_t index, gcc_jit_function *fn, c
 					goto RET;
 				}
 
-				gcc_jit_block_end_with_void_return(
-					gcc_block,
-					gen_loc(cg->gcc, statement.debug.debug_info)
+				cg->be.block_end_with_return(
+					cg->ctx,
+					&statement.debug.debug_info,
+					be_block,
+					NULL,
+					err
 				);
+				if(*err) goto RET;
 			} else {
 				Expr val = gen_expr(cg, sig.ret, statement.ret.return_val, &scope, err);
 				if(*err) goto RET;
 
-				gcc_jit_block_end_with_return(
-					gcc_block,
-					gen_loc(cg->gcc, statement.debug.debug_info),
-					val.expr		
+				cg->be.block_end_with_return(
+					cg->ctx,
+					&statement.debug.debug_info,
+					be_block,
+					val.expr,
+					err
 				);
+				if(*err) goto RET;
 			}
 			break;
 
@@ -1927,23 +1610,27 @@ static void gen_fn(CodeGen *cg, FnSig sig, size_t index, gcc_jit_function *fn, c
 			goto RET;
 		}
 
-		gcc_jit_block_end_with_void_return(
-			gcc_block,
-			NULL
+		cg->be.block_end_with_return(
+			cg->ctx,
+			NULL,
+			be_block,
+			NULL,
+			err
 		);
+		if(*err) goto RET;
 	}
 
 RET:
 	return;
 }
 
-void codegen_gen(CodeGen *cg, GenType gen_type, const char *path, const char *ir_dump, Error *err)
+void codegen_gen(CodeGen *cg, GenOptions options, const char *path, Error *err)
 {
 	assert(cg->nodes[0].type == AST_MODULE);
 	DynArr sigs;
 	dynarr_init(&sigs, sizeof(FnSig));
 	DynArr fns;
-	dynarr_init(&fns, sizeof(gcc_jit_function*));
+	dynarr_init(&fns, sizeof(WyrtFunction*));
 
 	Scope global;
 	scope_init(&global, NULL, err);
@@ -1996,7 +1683,7 @@ void codegen_gen(CodeGen *cg, GenType gen_type, const char *path, const char *ir
 			}
 			
 			FnSig *sig = dynarr_from_back(&sigs, 0);
-			*(gcc_jit_function**)dynarr_from_back(&fns, 0) = gen_fnsig(cg, sig, &global, index, err);
+			*(WyrtFunction**)dynarr_from_back(&fns, 0) = gen_fnsig(cg, sig, &global, index, err);
 			
 			if(*err) {
 				dynarr_clean(&sigs);
@@ -2040,40 +1727,8 @@ void codegen_gen(CodeGen *cg, GenType gen_type, const char *path, const char *ir
 		}
 	}
 
-	if(ir_dump) {
-		gcc_jit_context_dump_to_file(cg->gcc, ir_dump, false);
-	}
-
-	switch(gen_type) {
-	case GEN_EXE:
-		gcc_jit_context_compile_to_file(
-			cg->gcc,
-			GCC_JIT_OUTPUT_KIND_EXECUTABLE,
-			path
-		);
-		break;
-	case GEN_SHR:
-		gcc_jit_context_compile_to_file(
-			cg->gcc,
-			GCC_JIT_OUTPUT_KIND_DYNAMIC_LIBRARY,
-			path
-		);
-		break;
-	case GEN_OBJ:
-		gcc_jit_context_compile_to_file(
-			cg->gcc,
-			GCC_JIT_OUTPUT_KIND_OBJECT_FILE,
-			path
-		);
-		break;
-	case GEN_ASM:	
-		gcc_jit_context_compile_to_file(
-			cg->gcc,
-			GCC_JIT_OUTPUT_KIND_ASSEMBLER,
-			path
-		);
-		break;
-	}
+	cg->be.compile(cg->ctx, options, path, err);
+	if(*err) goto RET;
 
 RET:
 	return;

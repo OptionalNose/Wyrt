@@ -6,15 +6,18 @@
 #include "parser.h"
 #include "codegen.h"
 
+#include "../config.h"
+
 typedef struct {
 	char *src_file;
 	char *token_dump_file; // NULL == Do not dump
 	char *ast_dump_file;
-	char *ir_dump_file;
+	char const *backend_path;
 	char *output_file;
 	bool do_not_link;
 	bool do_not_assemble;
 	bool debug;
+	int opt_level;
 } CmdlineOptions;
 
 int match_arg(const char *query, const char *arg)
@@ -32,6 +35,7 @@ int match_arg(const char *query, const char *arg)
 int main(int argc, char **argv)
 {
 	CmdlineOptions options = { 0 };
+	options.backend_path = backends[0].path;
 
 	Error err = ERROR_OK;
 
@@ -63,11 +67,8 @@ int main(int argc, char **argv)
 				"\t--ast-dump=<path>\t\t\t\t"
 				"Dump Parsed AST Nodes into file <path>\n"
 
-				"\t--ir-dump=<path>\t\t\t\t"
-				"Dump GCC IR into file <path>\n"
-
 				"\t-S\t\t\t\t\t\t"
-				"Compile only. Do not Assemble or Link."
+				"Compile only. Do not Assemble or Link.\n"
 
 				"\t-c\t\t\t\t\t\t"
 				"Compile and Assemble only. Do not Link\n"
@@ -76,7 +77,15 @@ int main(int argc, char **argv)
 
 				"\t-g\t\t\t\t\t\tEmit Debug Symbols\n"
 				"\t-O<0,1,2,3>\t\t\t\t\tOptimization Level (0 = lowest, 3 = highest)\n"
+
+				"\t--backend-path=<path>\t\t\t\tUse the Backend Dynamic Library at <path>\n"
+				"\t--backend=<name>\t\t\t\t\tUse a pre-configured backend\n"
+				"\t\tPossible options are:\n"
+				"\t\t(default) "
 			);
+			for(size_t j = 0; j < (sizeof backends) / sizeof backends[0]; j++) {
+				printf("%s\t\t\t\t%s\n\t\t", backends[j].name, backends[j].desc);
+			}
 			fflush(stdout);
 			goto RET;
 		} else if(match_arg("--token-dump=", argv[i])) {
@@ -87,11 +96,6 @@ int main(int argc, char **argv)
 		} else if(match_arg("--ast-dump=", argv[i])) {
 			options.ast_dump_file = match_arg(
 				"--ast-dump=",
-				argv[i]
-			) + argv[i];
-		} else if(match_arg("--ir-dump=", argv[i])) {
-			options.ir_dump_file = match_arg(
-				"--ir-dump=",
 				argv[i]
 			) + argv[i];
 		} else if(match_arg("-S", argv[i])) {
@@ -109,6 +113,38 @@ int main(int argc, char **argv)
 			i += 1;
 		} else if(match_arg("-g", argv[i])) {
 			options.debug = true;
+		} else if(match_arg("-O", argv[i])) {
+			if(!sscanf(argv[i], "-O%d", &options.opt_level)) {
+				fprintf(stderr, "Expected integer after -O!\n");
+				err = ERROR_UNEXPECTED_DATA;
+				goto RET;
+			}
+			if(options.opt_level < 0 || options.opt_level > 3) {
+				fprintf(
+					stderr,
+					"Invalid Optimization Level '%d', Optimization Levels are 0-3\n",
+					options.opt_level
+				);
+				err = ERROR_UNEXPECTED_DATA;
+				goto RET;
+			}
+		} else if(match_arg("--backend=", argv[i])) {
+			bool found = false;
+			const char *name = argv[i] + match_arg("--backend=", argv[i]);
+			for(size_t j = 0; j < (sizeof backends) / sizeof backends[0]; j++) {
+				if(!strcmp(backends[j].name, name)) {
+					found = true;
+					options.backend_path = backends[j].path;
+					break;
+				}
+			}
+			if(!found) {
+				fprintf(stderr, "No backend named '%s'!\n", name);
+			   	err = ERROR_UNEXPECTED_DATA;
+				goto RET;	
+			}
+		} else if(match_arg("--backend-path=", argv[i])) {
+			options.backend_path = argv[i] + match_arg("--backend-path=", argv[i]);
 		} else if(sscanf(argv[i], "%*1[^-]%c", &garbage)) {
 			sscanf(argv[i], "%*1[^-]%*s%n", &string_length);
 			char *path = malloc(string_length + 1);
@@ -132,15 +168,6 @@ int main(int argc, char **argv)
 
 	if(!options.src_file) {
 		fprintf(stderr, "No input files.\n");
-		err = ERROR_UNEXPECTED_DATA;
-		goto RET;
-	}
-
-	if(options.do_not_assemble && options.ir_dump_file) {
-		fprintf(
-			stderr,
-			"Cannot use -S and --ir-dump simultaneously. Use -o instead.\n"
-		);
 		err = ERROR_UNEXPECTED_DATA;
 		goto RET;
 	}
@@ -211,30 +238,37 @@ int main(int argc, char **argv)
 #endif
 	}
 
-	codegen_init(
-		&codegen,
-		nodes,
-		node_count,
-		identifiers,
-		strings,
-		string_count
-	);
+	if(options.backend_path) {
+		codegen_init(
+			&codegen,
+			nodes,
+			node_count,
+			identifiers,
+			strings,
+			string_count,
+			options.backend_path,
+			&err
+		);
+		if(err) goto RET;
 
-	//TODO: Optimization and Debug
-	codegen_gen(
-		&codegen,
-		options.do_not_link ? (options.do_not_assemble ? GEN_ASM : GEN_OBJ) : GEN_EXE,
-		options.output_file,
-		options.ir_dump_file,
-		&err
-	);
-	if(err) goto RET;
+		GenOptions gen_options = 0;
+		gen_options += options.do_not_link;
+		gen_options += options.do_not_assemble;
+
+		if(options.debug) gen_options += GEN_DBG;
+
+		gen_options += GEN_OPT1 * options.opt_level;
+
+		codegen_gen(
+			&codegen,
+			gen_options,
+			options.output_file,
+			&err
+		);
+		if(err) goto RET;
+	}
 
 RET:
-	if(options.src_file) free(options.src_file);
-	if(options.token_dump_file) free(options.src_file);
-	if(options.ast_dump_file) free(options.src_file);
-	if(options.ir_dump_file) free(options.src_file);
 	lexer_clean(&lexer);
 	lexer_clean_strings(identifiers, identifier_count);
 	lexer_clean_strings(strings, string_count);

@@ -21,7 +21,7 @@ const int test_count = (sizeof tests) / (sizeof tests[0]);
 #define RESET "\x1b[0m"
 
 #ifdef _WIN32
-#define COMPILER "wyrt.exe_Release "
+#define COMPILER "wyrt_Release.exe"
 #define EXE "a.exe"
 #else
 #define COMPILER "./wyrt_Release "

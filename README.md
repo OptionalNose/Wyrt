@@ -34,44 +34,44 @@ I find it easier to pronounce it "whir-t" or "wee-rt".
 
 To build the Compiler run:
 ```bash
-CC src/*.c -o wyrt
+CC build.c -O3 -o build<.exe>
+./build<.exe>
 ```
-or
+To automatically configure the compiler (generates `config.h`) based on which backends were able to be built.
+If a backend could not be built (i.e. missing dependency), then that backend will be skipped.
+If you wish, you could also manually edit `config.h`.
+Backends included in `config.h` can be used by using the `--backend=` option when you invoke the compiler.
+Additional backends that are not included in `config.h` can be used at compiler-runtime with the `--backend-path=` option.
 
-```bash
-make
-```
 Note: This will build a debug version of the compiler with Address and Undefined Behaviour Sanitizers.
 These Sanitizers at times do not like the high-levels of recursion throughout the compiler, and can cause the compiler to Segfault.
 If you get a Segfault message without any information from the Sanitizers, then it is highly likely they are the culprit.
 Running the program repeatedly, or inside a debugger, will fix the problem.
 
-The only _build_ dependencies are `libc` and `libgccjit`.
+The only dependency to build the compiler itself is `libc`.
+To include the GCC backend (currently the only backend), you must also have `libgccjit` installed.
 
-    If you are on Linux: install `libgccjit` using your package manager
+If you are on Linux: install `libgccjit` using your package manager
     
-    If you are on Windows: the only method I got to work was to install [MSYS2](https://www.msys2.org/), a minimalist Unix environment for Windows and use its package manager to install.
+If you are on Windows: the only method I got to work was to install [MSYS2](https://www.msys2.org/), a minimalist Unix environment for Windows and use its package manager to install.
 
 ---
 
 ## Running
 Generally:
 ```bash
-wyrt <src>.wyrt -o <output>
+wyrt <src>.w -o <output>
 ```
 to display the builtin help, run `wyrt --help` or `wyrt -h`
 
-Currently multiple input files and glob-patterns are not supported.
-
-To only compile, but not link, use `wyrt -c`. The created object files can be linked normally.
-
+To only compile, but not link, use `wyrt -c`. The created object files can be linked normally with object files that also follow the C ABI.
 ---
 
 ## Testing
 Build the Release build of the Compiler
 (prevents Sanitizer Segfault issue), and Build and Run the Test Runner
 ```bash
-make test
+./build<.exe> test
 ```
 
 Some tests are designed to not compile, these have 'failing_' prefixing their names.

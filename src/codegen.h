@@ -29,8 +29,8 @@ typedef struct {
 	size_t var_count;
 	TypeContext tc;
 	
-	WyrtLvalue **be_vars;
-	WyrtRvalue **be_params;
+	WyrtLvalue *be_vars;
+	WyrtRvalue *be_params;
 } Scope;
 
 typedef struct {
@@ -45,7 +45,7 @@ typedef struct {
 
 	void *dl;
 	WyrtBackend be;
-	WyrtContext *ctx;
+	WyrtContext ctx;
 } CodeGen;
 
 void codegen_init(

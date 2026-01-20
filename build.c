@@ -9,15 +9,19 @@
 
 #ifdef _WIN32
 #define EXT ".exe "
-#define DLEXT ".dll "
+#define DLEXT ".dll"
 #define LDFLAGS "-lkernel32 "
 #define DBGFLAGS "-O0 -g -fsanitize=undefined -fsanitize-trap=all "
+#define TEST_RUNNER "test_runner.exe "
+#define CWD_PREFIX ".\\\\"
 #include "build_win.c"
 #else
 #define EXT " "
-#define DLEXT ".so "
+#define DLEXT ".so"
 #define LDFLAGS "-ldl "
-#define DBGFLAGS "-O0 -g -fsanitize=undefined,address "
+#define DBGFLAGS "-O0 -g -fsanitize=undefined -fsanitize-trap=all "
+#define TEST_RUNNER "./test_runner "
+#define CWD_PREFIX "./"
 #include "build_posix.c"
 #endif
 
@@ -94,8 +98,8 @@ int main(int argc, char **argv)
 	if(release || test) {	
 		for(int i = 0; i < backend_count; i++) {
 			string_builder_printf(
-				&cmd, &err, CC "-O3 -o wyrt_%s_backend" DLEXT "%s src/backends/wyrt_%s_backend.c",
-				backends[i].name, backends[i].ld, backends[i].name
+				&cmd, &err, CC "-O3 -fPIC --shared -o wyrt_%s_backend" DLEXT " src/backends/wyrt_%s_backend.c %s",
+				backends[i].name, backends[i].name, backends[i].ld
 			);
 			if(err) goto RET;
 			
@@ -113,7 +117,7 @@ int main(int argc, char **argv)
 			} else {
 				fprintf(
 					config,
-					"\t{\"%s\", \"%s\", wyrt_%s_backend" DLEXT "},\n",
+					"\t{\"%s\", \"%s\", \"./wyrt_%s_backend" DLEXT "\"},\n",
 					backends[i].name, backends[i].desc, backends[i].name
 				);
 			}
@@ -122,7 +126,7 @@ int main(int argc, char **argv)
 
 		fprintf(
 			config,
-			"{\"none\", \"Do not use any backend. (You probably also want to use --ast-dump)\", NULL}\n};\n"
+			"\t{\"none\", \"Do not use any backend. (You probably also want to use --ast-dump)\", NULL}\n};\n"
 		);
 		fflush(config);
 
@@ -144,15 +148,15 @@ int main(int argc, char **argv)
 			string_builder_printf(&dstpath, &err, "wyrt_%s_backend" DLEXT, backends[i].name);
 			if(err) goto RET;
 
-			if(!file_is_newer(srcpath.str, dstpath.str)) continue;
+			//if(!file_is_newer(srcpath.str, dstpath.str)) continue;
 
 			cmd.count = 0;
 			string_builder_printf(
-				&cmd, &err, CC DBGFLAGS "%s --shared -o %s %s",
-				backends[i].ld, dstpath.str, srcpath.str
+				&cmd, &err, CC DBGFLAGS "%s -fPIC --shared -o %s %s",
+				srcpath.str, dstpath.str, backends[i].ld
 			);
 			if(err) goto RET;
-			
+
 			int res = system(cmd.str);
 			if(res) {
 				fflush(stderr);
@@ -167,7 +171,7 @@ int main(int argc, char **argv)
 			} else {
 				fprintf(
 					config,
-					"\t{\"%s\", \"%s\", wyrt_%s_backend" DLEXT "},\n",
+					"\t{\"%s\", \"%s\", \"" CWD_PREFIX "wyrt_%s_backend" DLEXT "\"},\n",
 					backends[i].name, backends[i].desc, backends[i].name
 				);
 			}
@@ -175,7 +179,7 @@ int main(int argc, char **argv)
 
 		fprintf(
 			config,
-			"{\"none\", \"Do not use any backend. (You probably also want to use --ast-dump)\", NULL}\n};\n"
+			"\t{\"none\", \"Do not use any backend. (You probably also want to use --ast-dump)\", NULL}\n};\n"
 		);
 		
 		fflush(config);
@@ -199,12 +203,12 @@ int main(int argc, char **argv)
 			system(cmd.str);
 		}
 		cmd.count = 0;
-		system(CC LDFLAGS "obj/*.o -o wyrt" EXT);
+		system(CC CFLAGS DBGFLAGS LDFLAGS "obj/*.o -o wyrt" EXT);
 	}
 
 	if(test) {
-		system(CC "test_runner.c -O3 -o test_runner" EXT);
-		system("test_runner" EXT);
+		system(CC "test_runner.c -O3 -o " TEST_RUNNER);
+		system(TEST_RUNNER);
 	}
 
 RET:

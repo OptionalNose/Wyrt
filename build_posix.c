@@ -1,9 +1,10 @@
 #include <sys/stat.h>
+#include <errno.h>
 
 void mkdir_if_nexist(const char *dir, Error *err)
 {
-	int res = mkdir(dir, 07777);
-	if(res && res != EEXISTS) {
+	int res = mkdir(dir, 0777);
+	if(res && errno != EEXIST) {
 		fprintf(stderr, "Could not create build directory!\n");
 		*err = ERROR_IO;
 		goto RET;

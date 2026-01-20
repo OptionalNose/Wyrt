@@ -14,12 +14,12 @@ int FreeLibrary(void *);
 #endif
 
 typedef struct {
-	WyrtRvalue *expr;
+	WyrtRvalue expr;
 	Type type;
 } Expr;
 
 typedef struct {
-	WyrtLvalue *lvalue;
+	WyrtLvalue lvalue;
 	Type type;
 	bool mut;
 	bool read;
@@ -66,7 +66,7 @@ void codegen_init(
 	}
 #endif
 
-	WyrtContext *ctx = be->get_ctx(err);
+	WyrtContext ctx = be->get_ctx(err);
 	if(*err) goto RET;
 
 	*cg = (CodeGen) {
@@ -94,6 +94,7 @@ void codegen_clean(const CodeGen *cg)
 		free(cg->fn_sigs[i].arg_ids);
 	}
 	free(cg->fn_sigs);
+	free(cg->fns);
 	if(cg->be.release_ctx) cg->be.release_ctx(cg->ctx);
 
 #ifdef _WIN32
@@ -111,13 +112,13 @@ static WyrtFunction *gen_fnsig(
 	Error *err
 )
 {
-	WyrtFunction *fn = NULL;
+	WyrtFunction fn = NULL;
 	DynArr args;
 	DynArr arg_ids;
 	DynArr arg_bes;
 	dynarr_init(&args, sizeof(Type));	
 	dynarr_init(&arg_ids, sizeof(size_t));
-	dynarr_init(&arg_bes, sizeof(WyrtParam*));
+	dynarr_init(&arg_bes, sizeof(WyrtParam));
 
 	AstNode ident = cg->nodes[cg->nodes[i].fn_def.ident];
 	assert(ident.type == AST_IDENT);
@@ -148,6 +149,7 @@ static WyrtFunction *gen_fnsig(
 	);
 	if(*err) goto RET;
 
+	size_t additional = 0;
 	for(size_t i = 0; i < type.fn_type.arg_count; i++) {
 		Type arg_type = type_from_ast(
 			&scope->tc,
@@ -167,17 +169,59 @@ static WyrtFunction *gen_fnsig(
 		dynarr_push(&arg_ids, &arg_id, err);
 		if(*err) goto RET;
 
-		WyrtParam *arg_be = cg->be.new_param(
-			cg->ctx,
-			&arg.debug.debug_info,
-			arg_type,
-			cg->identifiers[arg_id],
-			err
-		);
-		if(*err) goto RET;
+		if(arg_type.type == TYPE_SLICE_CONST
+			|| arg_type.type == TYPE_SLICE_ABYSS
+			|| arg_type.type == TYPE_SLICE_VAR
+		) {
+			char ptr_name[2+8+1];
+			char len_name[2+8+1];
 
-		dynarr_push(&arg_bes, &arg_be, err);
-		if(*err) goto RET;
+			snprintf(ptr_name, 2+8+1, ".p%08zi", additional);
+			snprintf(len_name, 2+8+1, ".l%08zi", additional);
+
+			Type ptr = arg_type;
+			ptr.type -= TYPE_SLICE_CONST - TYPE_POINTER_CONST;
+
+			WyrtParam arg_ptr_be = cg->be.new_param(
+				cg->ctx,
+				&arg.debug.debug_info,
+				ptr,
+				&scope->tc,
+				ptr_name,
+				err
+			);
+			if(*err) goto RET;
+
+			WyrtParam arg_len_be = cg->be.new_param(
+				cg->ctx,
+				&arg.debug.debug_info,
+				(Type) {.type = TYPE_PRIMITIVE_U64},
+				&scope->tc,
+				len_name,
+				err
+			);
+			if(*err) goto RET;
+
+			dynarr_push(&arg_bes, &arg_ptr_be, err);
+			if(*err) goto RET;
+			dynarr_push(&arg_bes, &arg_len_be, err);
+			if(*err) goto RET;
+
+			additional += 1;
+		} else {
+			WyrtParam arg_be = cg->be.new_param(
+				cg->ctx,
+				&arg.debug.debug_info,
+				arg_type,
+				&scope->tc,
+				cg->identifiers[arg_id],
+				err
+			);
+			if(*err) goto RET;
+
+			dynarr_push(&arg_bes, &arg_be, err);
+			if(*err) goto RET;
+		}
 	}
 
 	*sig = (FnSig) {
@@ -193,7 +237,8 @@ static WyrtFunction *gen_fnsig(
 		cg->ctx,
 		&cg->nodes[i].debug.debug_info,
 		ret,
-		(WyrtParam**)arg_bes.data,
+		&scope->tc,
+		(WyrtParam*)arg_bes.data,
 		arg_bes.count,
 		imported,
 		imported ? cg->strings[linkage_name] : cg->identifiers[id],
@@ -214,7 +259,7 @@ RET:
 static Lvalue gen_lvalue(CodeGen *cg, size_t index, Scope *scope, Error *err);
 static Expr gen_fn_call(CodeGen *cg, AstNode expr, Scope *scope, Error *err);
 
-static WyrtRvalue *gen_cast(
+static WyrtRvalue gen_cast(
 	CodeGen *cg,
 	Expr expr,
 	Type type,
@@ -239,6 +284,7 @@ static WyrtRvalue *gen_cast(
 			loc,
 			expr.expr,
 			type,
+			tc,
 			err
 		);
 		if(*err) goto RET;
@@ -272,12 +318,13 @@ static WyrtRvalue *gen_cast(
 				expr.type.type
 			);
 
-			WyrtRvalue *(rvalues[2]);
+			WyrtRvalue rvalues[2];
 			rvalues[0] = cg->be.new_cast(
 				cg->ctx,
 				loc,
 				expr.expr,
 				ptr_to_elem,
+				tc,
 				err
 			);
 			if(*err) goto RET;
@@ -285,7 +332,7 @@ static WyrtRvalue *gen_cast(
 			rvalues[1] = cg->be.rvalue_int_lit(
 				cg->ctx,
 				tc->types[expr.type.pointer.base].array.len,
-				(Type) {.type = TYPE_PRIMITIVE_U64},
+				TYPE_PRIMITIVE_U64,
 				err
 			);
 			if(*err) goto RET;
@@ -294,6 +341,7 @@ static WyrtRvalue *gen_cast(
 				cg->ctx,
 				loc,
 				slice,
+				tc,
 				rvalues,
 				2,
 				err
@@ -339,7 +387,7 @@ static Expr gen_expr(CodeGen *cg, Type expected, size_t index, Scope *scope, Err
 			ret.type.type = TYPE_PRIMITIVE_U64;
 		}
 
-		ret.expr = cg->be.rvalue_int_lit(cg->ctx, expr.int_lit.val, ret.type, err);
+		ret.expr = cg->be.rvalue_int_lit(cg->ctx, expr.int_lit.val, ret.type.type, err);
 		if(*err) goto RET;
 		break;
 
@@ -427,11 +475,11 @@ static Expr gen_expr(CodeGen *cg, Type expected, size_t index, Scope *scope, Err
 
 		if(rhs_compatible) {
 			ret.type = lhs.type;
-			rhs.expr = cg->be.new_cast(cg->ctx, &expr.debug.debug_info, rhs.expr, lhs.type, err);
+			rhs.expr = cg->be.new_cast(cg->ctx, &expr.debug.debug_info, rhs.expr, lhs.type, &scope->tc, err);
 			if(*err) goto RET;
 		} else {
 			ret.type = rhs.type;
-			lhs.expr = cg->be.new_cast(cg->ctx, &expr.debug.debug_info, lhs.expr, rhs.type, err);
+			lhs.expr = cg->be.new_cast(cg->ctx, &expr.debug.debug_info, lhs.expr, rhs.type, &scope->tc, err);
 			if(*err) goto RET;
 		}
 
@@ -439,7 +487,7 @@ static Expr gen_expr(CodeGen *cg, Type expected, size_t index, Scope *scope, Err
 			cg->ctx,
 			&expr.debug.debug_info,
 			expr.type,
-			ret.type,
+			ret.type.type,
 			lhs.expr,
 			rhs.expr,
 			err
@@ -503,7 +551,7 @@ static Expr gen_expr(CodeGen *cg, Type expected, size_t index, Scope *scope, Err
 
 		Type elem_type = scope->tc.types[expected.array.base];
 
-		WyrtRvalue **elems = malloc(sizeof(*elems) * expr.array_lit.elem_count);
+		WyrtRvalue *elems = malloc(sizeof(*elems) * expr.array_lit.elem_count);
 		CHECK_MALLOC(elems);
 
 		for(size_t i = 0; i < expr.array_lit.elem_count; i++) {
@@ -521,6 +569,7 @@ static Expr gen_expr(CodeGen *cg, Type expected, size_t index, Scope *scope, Err
 			cg->ctx,
 			&expr.debug.debug_info,
 			expected,
+			&scope->tc,
 			elems,
 			expr.array_lit.elem_count,
 			err
@@ -580,7 +629,23 @@ ARRAY_LIT_CLEAN:
 		);
 		if(*err) goto RET;
 
-		WyrtLvalue *subs = cg->be.lvalue_subscript(
+		if(arr.type.type == TYPE_SLICE_CONST
+			|| arr.type.type == TYPE_SLICE_VAR
+		) {
+			arr.expr = cg->be.rvalue_field(
+				cg->ctx,
+				&expr.debug.debug_info,
+				arr.expr,
+				arr.type,
+				&scope->tc,
+				0,
+				err
+			);
+			if(*err) goto RET;
+			arr.type.type -= TYPE_SLICE_CONST - TYPE_POINTER_CONST;
+		}
+
+		WyrtLvalue subs = cg->be.lvalue_subscript(
 			cg->ctx,
 			&expr.debug.debug_info,
 			arr.expr,
@@ -628,7 +693,7 @@ ARRAY_LIT_CLEAN:
 			goto RET;
 		}
 
-		WyrtRvalue **members = malloc(sizeof(*members) * expected.struct_type.member_count);
+		WyrtRvalue *members = malloc(sizeof(*members) * expected.struct_type.member_count);
 		CHECK_MALLOC(members);
 
 		for(size_t i = 0; i < expr.struct_lit.member_count; i++) {
@@ -670,6 +735,7 @@ ARRAY_LIT_CLEAN:
 				members[i] = cg->be.rvalue_null(
 					cg->ctx,
 					scope->tc.types[expected.struct_type.member_types[i]],
+					&scope->tc,
 					err
 				);
 
@@ -684,6 +750,7 @@ ARRAY_LIT_CLEAN:
 			cg->ctx,
 			&expr.debug.debug_info,
 			expected,
+			&scope->tc,
 			members,
 			expected.struct_type.member_count,
 			err
@@ -722,7 +789,9 @@ ARRAY_LIT_CLEAN:
 					cg->ctx,
 					&expr.debug.debug_info,
 					parent.expr,
-					cg->identifiers[parent.type.struct_type.member_name_ids[i]],
+					parent.type,
+					&scope->tc,
+					i,
 					err
 				);
 				if(*err) goto RET;
@@ -748,7 +817,7 @@ ARRAY_LIT_CLEAN:
 		ret.type = types_get_ptr(&scope->tc, (Type) {.type = TYPE_PRIMITIVE_U8}, TYPE_POINTER_CONST);
 		ret.type.type = TYPE_SLICE_CONST;
 
-		WyrtRvalue *(vals[2]);
+		WyrtRvalue vals[2];
 		vals[0] = cg->be.rvalue_cstring_lit(
 			cg->ctx,
 			&expr.debug.debug_info,
@@ -760,7 +829,7 @@ ARRAY_LIT_CLEAN:
 		vals[1] = cg->be.rvalue_int_lit(
 			cg->ctx,
 			strlen(cg->strings[expr.string_lit.id]),
-			(Type) {.type = TYPE_PRIMITIVE_U64},
+			TYPE_PRIMITIVE_U64,
 			err
 		);
 		if(*err) goto RET;
@@ -769,6 +838,7 @@ ARRAY_LIT_CLEAN:
 			cg->ctx,
 			&expr.debug.debug_info,
 			ret.type,
+			&scope->tc,
 			vals,
 			2,
 			err
@@ -832,7 +902,9 @@ ARRAY_LIT_CLEAN:
 					cg->ctx,
 					&expr.debug.debug_info,
 					parent.expr,
-					cg->identifiers[expr.struct_access.member_id],
+					parent_struct,
+					&scope->tc,
+					i,
 					err
 				);
 				if(*err) goto RET;
@@ -892,11 +964,12 @@ RET_FAIL:
 static Expr gen_fn_call(CodeGen *cg, AstNode expr, Scope *scope, Error *err)
 {
 	Expr ret;
-	WyrtRvalue **args = NULL;
+	DynArr args;
+	dynarr_init(&args, sizeof(WyrtRvalue));
 
 	bool found = false;
 	FnSig sig;
-	WyrtFunction *fn;
+	WyrtFunction fn;
 	for(size_t i = 0; i < cg->fn_count; i++) {
 		if(cg->fn_sigs[i].id == expr.fn_call.fn_id) {
 			found = true;
@@ -916,6 +989,8 @@ static Expr gen_fn_call(CodeGen *cg, AstNode expr, Scope *scope, Error *err)
 		goto RET;
 	}
 	
+	ret.type = sig.ret;
+
 	if(expr.fn_call.arg_count != sig.arg_count) {
 		wyrt_diag(
 			stderr, cg->identifiers, cg->strings, &scope->tc,
@@ -928,32 +1003,63 @@ static Expr gen_fn_call(CodeGen *cg, AstNode expr, Scope *scope, Error *err)
 		goto RET;	
 	}
 
-	args = malloc(sig.arg_count * sizeof(WyrtRvalue*));
-	CHECK_MALLOC(args);
-
 	for(size_t i = 0; i < sig.arg_count; i++) {
 		Expr arg = gen_expr(cg, sig.args[i], expr.fn_call.args[i], scope, err);
 		if(*err) goto RET;
 
-		args[i] = arg.expr;
+		if(arg.type.type == TYPE_SLICE_CONST
+			|| arg.type.type == TYPE_SLICE_ABYSS
+			|| arg.type.type == TYPE_SLICE_VAR
+		) {
+			WyrtRvalue ptr = cg->be.rvalue_field(
+				cg->ctx,
+				&expr.debug.debug_info,
+				arg.expr,
+				arg.type,
+				&scope->tc,
+				0,
+				err
+			);
+			if(*err) goto RET;
+
+			WyrtRvalue len = cg->be.rvalue_field(
+				cg->ctx,
+				&expr.debug.debug_info,
+				arg.expr,
+				arg.type,
+				&scope->tc,
+				1,
+				err
+			);
+			if(*err) goto RET;
+			
+			dynarr_push(&args, &ptr, err);
+			if(*err) goto RET;
+
+			dynarr_push(&args, &len, err);
+			if(*err) goto RET;
+		} else {
+			dynarr_push(&args, &arg.expr, err);
+			if(*err) goto RET;
+		}
 	}
 
 	ret.expr = cg->be.rvalue_fn_call(
 		cg->ctx,
 		&expr.debug.debug_info,
 		fn,
-		args,
-		sig.arg_count,
+		args.data,
+		args.count,
 		err
 	);
 	if(*err) goto RET;
 
 RET:
-	if(args) free(args);
+	dynarr_clean(&args);
 	return ret;
 }
 
-static WyrtLvalue *gen_var_decl(
+static WyrtLvalue gen_var_decl(
 	CodeGen *cg,
 	const AstNode *statement,
 	WyrtBlock *block,
@@ -962,7 +1068,7 @@ static WyrtLvalue *gen_var_decl(
 	Error *err
 )
 {
-	WyrtLvalue *be_var = NULL;
+	WyrtLvalue be_var = NULL;
 
 	Type type = type_from_ast(&scope->tc, cg->nodes, statement->var_decl.data_type, err);
 	if(*err) goto RET;
@@ -1007,6 +1113,7 @@ static WyrtLvalue *gen_var_decl(
 		&statement->debug.debug_info,
 		block,
 		type,
+		&scope->tc,
 		cg->identifiers[statement->var_decl.id],
 		err
 	);
@@ -1103,15 +1210,16 @@ static Lvalue gen_lvalue(CodeGen *cg, size_t index, Scope *scope, Error *err)
 			goto RET;
 		}
 
-		const char *field = NULL;
+		size_t field = SIZE_MAX;
 		for(size_t i = 0; i < parent.type.struct_type.member_count; i++) {
 			if(parent.type.struct_type.member_name_ids[i] == var.struct_access.member_id) {
-				field = cg->identifiers[var.struct_access.member_id];
+				field = i;
 				ret.type = scope->tc.types[parent.type.struct_type.member_types[i]];
+				break;
 			}
 		}
 
-		if(!field) {
+		if(field == SIZE_MAX) {
 			wyrt_diag(
 				stderr, cg->identifiers, cg->strings, &scope->tc,
 				"No Member '%i' in struct '%t' at %l\n",
@@ -1127,7 +1235,9 @@ static Lvalue gen_lvalue(CodeGen *cg, size_t index, Scope *scope, Error *err)
 			cg->ctx,
 			&var.debug.debug_info,
 			parent.lvalue,
-			cg->identifiers[var.struct_access.member_id],
+			parent.type,
+			&scope->tc,
+			field,
 			err
 		);
 		if(*err) goto RET;
@@ -1240,15 +1350,16 @@ static Lvalue gen_lvalue(CodeGen *cg, size_t index, Scope *scope, Error *err)
 			goto RET;
 		}
 
-		const char *field = NULL;
+		size_t field = SIZE_MAX;
 		for(size_t i = 0; i < parent_struct.struct_type.member_count; i++) {
 			if(parent_struct.struct_type.member_name_ids[i] == var.struct_access.member_id) {
-				field = cg->identifiers[var.struct_access.member_id];
+				field = i;
 				ret.type = scope->tc.types[parent_struct.struct_type.member_types[i]];
+				break;
 			}
 		}
 
-		if(!field) {
+		if(field == SIZE_MAX) {
 			wyrt_diag(
 				stderr, cg->identifiers, cg->strings, &scope->tc,
 				"No Member '%i' in struct '%t' at %l\n",
@@ -1264,6 +1375,8 @@ static Lvalue gen_lvalue(CodeGen *cg, size_t index, Scope *scope, Error *err)
 			cg->ctx,
 			&var.debug.debug_info,
 			parent.expr,
+			parent_struct,
+			&scope->tc,
 			field,
 			err
 		);
@@ -1292,7 +1405,7 @@ RET_FAIL:
 	return ret;
 }
 
-static void gen_fn(CodeGen *cg, FnSig sig, size_t index, WyrtFunction *fn, const Scope *global, Error *err)
+static void gen_fn(CodeGen *cg, FnSig sig, size_t index, WyrtFunction fn, const Scope *global, Error *err)
 {
 	const AstNode def = cg->nodes[index];
 	assert(def.type == AST_FN_DEF);
@@ -1302,14 +1415,14 @@ static void gen_fn(CodeGen *cg, FnSig sig, size_t index, WyrtFunction *fn, const
 	
 	DynArr be_vars;
 	DynArr vars;
-	dynarr_init(&be_vars, sizeof(WyrtLvalue*));
+	dynarr_init(&be_vars, sizeof(WyrtLvalue));
 	dynarr_init(&vars, sizeof(Var));
 
 	Scope scope;
 	scope_init(&scope, global, err);
 	if(*err) goto RET;
 
-	scope.be_params = malloc(sig.arg_count * sizeof(WyrtRvalue*));	
+	scope.be_params = malloc(sig.arg_count * sizeof(WyrtRvalue));	
 	CHECK_MALLOC(scope.be_params);
 	scope.params = malloc(sig.arg_count * sizeof(Var));
 	CHECK_MALLOC(scope.params);
@@ -1317,25 +1430,88 @@ static void gen_fn(CodeGen *cg, FnSig sig, size_t index, WyrtFunction *fn, const
 
 	assert(block.type == AST_BLOCK);
 
+	size_t additional = 0;
 	for(size_t i = 0; i < sig.arg_count; i++) {
-		WyrtParam *param = cg->be.function_get_param(
-			cg->ctx,
-			fn,
-			i,
-			err
-		);
-		if(*err) goto RET;
-		scope.be_params[i] = cg->be.rvalue_from_param(param);
-		
 		scope.params[i] = (Var) {
 			.id = sig.arg_ids[i],
 			.type = sig.args[i],
 			.mut = false,
 			.declared = true,
 		};
+
+		if(sig.args[i].type == TYPE_SLICE_CONST
+			|| sig.args[i].type == TYPE_SLICE_ABYSS
+			|| sig.args[i].type == TYPE_SLICE_VAR
+		) {
+			WyrtParam ptr = cg->be.function_get_param(
+				cg->ctx,
+				fn,
+				i + additional,
+				err
+			);
+			if(*err) goto RET;
+
+			WyrtParam len = cg->be.function_get_param(
+				cg->ctx,
+				fn,
+				i + additional + 1,
+				err
+			);
+			if(*err) goto RET;
+
+			WyrtRvalue vals[2];
+			vals[0] = cg->be.rvalue_from_param(ptr);
+			vals[1] = cg->be.rvalue_from_param(len);
+
+			size_t type_refs[2];
+			Type ptr_type = (Type) {
+				.pointer = {
+					.type = TYPE_POINTER_CONST + (sig.args[i].type - TYPE_SLICE_CONST),
+					.base = sig.args[i].slice.base,
+				},
+			};
+			type_refs[0] = types_register_nexist(&scope.tc, ptr_type, err);
+			if(*err) goto RET;
+
+			Type len_type = (Type) {.type = TYPE_PRIMITIVE_U64};
+			type_refs[1] = types_register_nexist(&scope.tc, len_type, err);
+			if(*err) goto RET;
+
+			size_t ids[2] = {0, 1};
+			Type s = (Type) {
+				.struct_type = {
+					.type = TYPE_STRUCT,
+					.member_types = type_refs,
+					.member_name_ids = ids,
+					.member_count = 2,
+				},
+			};
+
+			scope.be_params[i] = cg->be.rvalue_struct_lit(
+				cg->ctx,
+				NULL,
+				s,
+				&scope.tc,
+				vals,
+				2,
+				err
+			);
+			if(*err) goto RET;
+
+			additional += 1;
+		} else {
+			WyrtParam param = cg->be.function_get_param(
+				cg->ctx,
+				fn,
+				i + additional,
+				err
+			);
+			if(*err) goto RET;
+			scope.be_params[i] = cg->be.rvalue_from_param(param);
+		}
 	}
 
-	WyrtBlock *be_block = cg->be.new_block(
+	WyrtBlock be_block = cg->be.new_block(
 		cg->ctx,
 		fn,
 		err
@@ -1347,7 +1523,7 @@ static void gen_fn(CodeGen *cg, FnSig sig, size_t index, WyrtFunction *fn, const
 
 		if(statement.type == AST_VAR_DECL) {
 			Var var;
-			WyrtLvalue *be_var = gen_var_decl(cg, &statement, be_block, &var, &scope, err);
+			WyrtLvalue be_var = gen_var_decl(cg, &statement, be_block, &var, &scope, err);
 			if(*err) {
 				dynarr_clean(&vars);
 				dynarr_clean(&be_vars);
@@ -1621,6 +1797,7 @@ static void gen_fn(CodeGen *cg, FnSig sig, size_t index, WyrtFunction *fn, const
 	}
 
 RET:
+	scope_clean(&scope);
 	return;
 }
 
@@ -1630,7 +1807,7 @@ void codegen_gen(CodeGen *cg, GenOptions options, const char *path, Error *err)
 	DynArr sigs;
 	dynarr_init(&sigs, sizeof(FnSig));
 	DynArr fns;
-	dynarr_init(&fns, sizeof(WyrtFunction*));
+	dynarr_init(&fns, sizeof(WyrtFunction));
 
 	Scope global;
 	scope_init(&global, NULL, err);
@@ -1683,7 +1860,7 @@ void codegen_gen(CodeGen *cg, GenOptions options, const char *path, Error *err)
 			}
 			
 			FnSig *sig = dynarr_from_back(&sigs, 0);
-			*(WyrtFunction**)dynarr_from_back(&fns, 0) = gen_fnsig(cg, sig, &global, index, err);
+			*(WyrtFunction*)dynarr_from_back(&fns, 0) = gen_fnsig(cg, sig, &global, index, err);
 			
 			if(*err) {
 				dynarr_clean(&sigs);
@@ -1731,30 +1908,40 @@ void codegen_gen(CodeGen *cg, GenOptions options, const char *path, Error *err)
 	if(*err) goto RET;
 
 RET:
+	scope_clean(&global);
 	return;
 }
 
 void scope_init(Scope *scope, const Scope *parent, Error *err)
 {
+	*scope = (Scope) { 0 };
 	if(parent) {
-		scope->params = malloc(parent->param_count * sizeof(Var));
-		CHECK_MALLOC(scope->params);
-		scope->param_count = parent->param_count;
-		scope->vars = malloc(parent->var_count * sizeof(Var));
-		CHECK_MALLOC(scope->vars);
-		scope->var_count = parent->var_count;
+		if(parent->param_count) {
+			scope->param_count = parent->param_count;
 
-		memcpy(scope->params, parent->params, parent->param_count * sizeof(Var));
-		memcpy(scope->vars, parent->vars, parent->var_count * sizeof(Var));
+			scope->params = malloc(parent->param_count * sizeof(Var));
+			CHECK_MALLOC(scope->params);
+			memcpy(scope->params, parent->params, parent->param_count * sizeof(Var));
+
+			scope->be_params = malloc(parent->param_count * sizeof(WyrtRvalue));
+			CHECK_MALLOC(scope->be_params);
+			memcpy(scope->be_params, parent->be_params, parent->param_count * sizeof(Var));
+		}
+		if(parent->var_count) {
+			scope->var_count = parent->var_count;
+
+			scope->vars = malloc(parent->var_count * sizeof(Var));
+			CHECK_MALLOC(scope->vars);
+			memcpy(scope->vars, parent->vars, parent->var_count * sizeof(Var));
+
+			scope->be_vars = malloc(parent->var_count * sizeof(Var));
+			CHECK_MALLOC(scope->be_vars);
+			memcpy(scope->be_vars, parent->be_vars, parent->var_count * sizeof(Var));
+		}
 
 		types_copy(&scope->tc, &parent->tc, err);
 		if(*err) goto RET;
 	} else {
-		scope->params = NULL;
-		scope->vars = NULL;
-		scope->param_count = 0;
-		scope->var_count = 0;
-
 		types_init(&scope->tc, err);
 		if(*err) goto RET;
 	}
@@ -1766,6 +1953,8 @@ RET:
 void scope_clean(const Scope *scope)
 {
 	if(scope->params) free(scope->params);
+	if(scope->be_params) free(scope->be_params);
 	if(scope->vars) free(scope->vars);
+	if(scope->be_vars) free(scope->be_vars);
 	if(scope->tc.types) free(scope->tc.types);
 }

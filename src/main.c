@@ -53,7 +53,6 @@ int main(int argc, char **argv)
 	CodeGen codegen = { 0 };
 
 	for(int i = 1; i < argc; i++) {
-		int string_length = 0;
 		char garbage;
 		if(match_arg("--help", argv[i]) || match_arg("-h", argv[i])) {
 			printf(
@@ -79,13 +78,18 @@ int main(int argc, char **argv)
 				"\t-O<0,1,2,3>\t\t\t\t\tOptimization Level (0 = lowest, 3 = highest)\n"
 
 				"\t--backend-path=<path>\t\t\t\tUse the Backend Dynamic Library at <path>\n"
-				"\t--backend=<name>\t\t\t\t\tUse a pre-configured backend\n"
+				"\t--backend=<name>\t\t\t\tUse a pre-configured backend\n"
 				"\t\tPossible options are:\n"
 				"\t\t(default) "
 			);
 			for(size_t j = 0; j < (sizeof backends) / sizeof backends[0]; j++) {
-				printf("%s\t\t\t\t%s\n\t\t", backends[j].name, backends[j].desc);
+				if(j) {
+					printf("%s\t\t\t\t\t%s\n\t\t", backends[j].name, backends[j].desc);
+				} else {
+					printf("%s\t\t\t\t%s\n\t\t", backends[j].name, backends[j].desc);
+				}
 			}
+			fputc('\n', stdout);
 			fflush(stdout);
 			goto RET;
 		} else if(match_arg("--token-dump=", argv[i])) {
@@ -146,14 +150,7 @@ int main(int argc, char **argv)
 		} else if(match_arg("--backend-path=", argv[i])) {
 			options.backend_path = argv[i] + match_arg("--backend-path=", argv[i]);
 		} else if(sscanf(argv[i], "%*1[^-]%c", &garbage)) {
-			sscanf(argv[i], "%*1[^-]%*s%n", &string_length);
-			char *path = malloc(string_length + 1);
-			if(!path) {
-				err = ERROR_OUT_OF_MEMORY;
-				goto RET;
-			}
-			sscanf(argv[i], "%s", path);
-			options.src_file = path;
+			options.src_file = argv[i];
 		} else {
 			fprintf(
 				stderr,

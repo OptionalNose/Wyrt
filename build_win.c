@@ -14,8 +14,8 @@ int CloseHandle(void *);
 void mkdir_if_nexist(const char *dir, Error *err)
 {
 	int res = CreateDirectoryA(dir, NULL);
-	if(res && GetLastError() != EXISTS) {
-		fprintf(stderr, "Could not create '%s' directory!\n", dir);
+	if(!res && GetLastError() != EXISTS) {
+		fprintf(stderr, "Could not create '%s' directory: %d!\n", dir);
 		*err = ERROR_IO;
 		goto RET;
 	}

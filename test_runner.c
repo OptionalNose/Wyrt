@@ -21,11 +21,11 @@ const int test_count = (sizeof tests) / (sizeof tests[0]);
 #define RESET "\x1b[0m"
 
 #ifdef _WIN32
-#define COMPILER "wyrt_Release.exe"
+#define COMPILER "C:/msys64/msys2_shell.cmd -defterm -here -no-start -ucrt64 -c \"./wyrt_Release.exe "
 #define EXE "a.exe"
 #else
 #define COMPILER "./wyrt_Release "
-#define EXE "a.out"
+#define EXE "./a.out"
 #endif
 
 int main(void)
@@ -33,7 +33,11 @@ int main(void)
 	remove("err");
 	for(int i = 0; i < test_count; i++) {
 		printf("Test '%s': ", tests[i].file);
+#ifdef _WIN32
+		char *cmd = malloc(strlen(COMPILER) + strlen(tests[i].file) + strlen("test/ 2> err\"") + 1);
+#else
 		char *cmd = malloc(strlen(COMPILER) + strlen(tests[i].file) + strlen("test/ 2> err") + 1);
+#endif
 		FILE *file = NULL;
 		FILE *err = NULL;
 		FILE *out = NULL;
@@ -41,10 +45,13 @@ int main(void)
 		strcat(cmd, COMPILER "test/");
 		strcat(cmd, tests[i].file);
 		strcat(cmd, " 2> err");
+#ifdef _WIN32
+		strcat(cmd, "\"");
+#endif
 
 		int comp_status = system(cmd);
 
-		err = fopen("err", "rb");
+		err = fopen("err", "r");
 		if((err && fgetc(err) != EOF) || comp_status) {
 			if(!tests[i].should_fail) {
 				printf("[" RED "FAIL" RESET "] Compiler Rejected\n");
@@ -57,6 +64,9 @@ int main(void)
 		}
 
 		int exitcode = system(EXE " > out");
+#ifndef _WIN32
+		exitcode /= 256; // Needed on Linux for some reason (probably endian?)
+#endif
 
 		if(tests[i].out) {
 			out = fopen("out", "r");

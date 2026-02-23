@@ -229,8 +229,8 @@ int main(int argc, char **argv)
 	if(options.backend_path) {
 		codegen_init(
 			&codegen,
-			nodes,
-			node_count,
+			parser.ast.nodes,
+			parser.ast.len,
 			identifiers,
 			strings,
 			string_count,

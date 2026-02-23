@@ -42,10 +42,8 @@ int main(int argc, char **argv)
 	size_t string_count = 0;
 	size_t token_count = 0;
 
-	AstNode *nodes = NULL;
-	size_t node_count = 0;
-
 	Lexer lexer = { 0 };
+	Parser parser = { 0 };
 	CodeGen codegen = { 0 };
 
 	for(int i = 1; i < argc; i++) {
@@ -173,13 +171,14 @@ int main(int argc, char **argv)
 				identifiers,
 				strings
 			);
+			fputc('\n', file);
 		}
 		fclose(file);
 	}
 
-	parser_gen_ast(
-		tokens, token_count, &nodes, &node_count, identifiers, strings, &err
-	);
+	parser_init(&parser, tokens, identifiers, strings);
+
+	parser_parse(&parser, &err);
 	if(err) goto RET;
 
 	if(options.ast_dump_file) {
@@ -190,16 +189,8 @@ int main(int argc, char **argv)
 			goto RET;
 		}
 
-		printf("INFO: %zi AST Nodes.\n", node_count);
-
-		parser_print_ast_to_file(
-			file,
-			nodes,
-			node_count,
-			identifiers,
-			strings
-		);
-
+		parser_print_ast(&parser, file);
+		printf("INFO: %zi AST Nodes.\n", parser.ast.len);
 		fclose(file);
 	}
 
@@ -213,8 +204,8 @@ int main(int argc, char **argv)
 
 	codegen_init(
 		&codegen,
-		nodes,
-		node_count,
+		parser.ast.nodes,
+		parser.ast.len,
 		identifiers,
 		strings,
 		string_count
@@ -231,15 +222,10 @@ int main(int argc, char **argv)
 	if(err) goto RET;
 
 RET:
-	if(options.src_file) free(options.src_file);
-	if(options.token_dump_file) free(options.src_file);
-	if(options.ast_dump_file) free(options.src_file);
-	if(options.ir_dump_file) free(options.src_file);
 	lexer_clean(&lexer);
 	lexer_clean_strings(identifiers, identifier_count);
 	lexer_clean_strings(strings, string_count);
-	if(nodes) parser_clean_ast(nodes, node_count);
-	if(nodes) free(nodes);
+	parser_clean(&parser);
 	if(tokens) free(tokens);
 	codegen_clean(&codegen);
 	return err;

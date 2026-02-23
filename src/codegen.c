@@ -2041,7 +2041,7 @@ void codegen_gen(CodeGen *cg, GenType gen_type, const char *path, const char *ir
 	}
 
 	if(ir_dump) {
-		gcc_jit_context_dump_to_file(cg->gcc, ir_dump, false);
+		gcc_jit_context_dump_to_file(cg->gcc, ir_dump, true);
 	}
 
 	switch(gen_type) {

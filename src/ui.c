@@ -19,6 +19,7 @@ void wyrt_diag(FILE *file, char *const *idents, char *const *strings, const Type
 			case 's': fputs(strings[va_arg(args, size_t)], file); break;
 			case 'i': fputs(idents[va_arg(args, size_t)], file); break;
 			case 't': type_print(file, tc, va_arg(args, Type), idents); break;
+			case 'T': lexer_print_token_to_file(file, va_arg(args, Token*), idents, strings); break;
 			case 'z': fprintf(file, "%zi", va_arg(args, size_t)); break;
 			}
 			break;

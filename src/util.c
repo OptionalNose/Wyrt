@@ -19,8 +19,9 @@ void dynarr_alloc(DynArr *da, size_t count, Error *err)
 	da->count += count;
 	if(da->count >= da->capacity) {
 		da->capacity = da->count * 2;
-		da->data = realloc(da->data, da->capacity * da->elem_size);
-		CHECK_MALLOC(da->data);
+		void *ptr = realloc(da->data, da->capacity * da->elem_size);
+		CHECK_MALLOC(ptr);
+		da->data = ptr; 
 	}
 RET:
 	return;
@@ -29,8 +30,9 @@ RET:
 void dynarr_reserve(DynArr *da, size_t count, Error *err)
 {
 	da->capacity += count;
-	da->data = realloc(da->data, da->capacity * da->elem_size);
-	CHECK_MALLOC(da->data);
+	void *ptr = realloc(da->data, da->capacity * da->elem_size);
+	CHECK_MALLOC(ptr);
+	da->data = ptr; 
 RET:
 	return;
 }
@@ -38,8 +40,9 @@ RET:
 void dynarr_shrink(DynArr *da, Error *err)
 {
 	da->capacity = da->count;
-	da->data = realloc(da->data, da->capacity * da->elem_size);
-	CHECK_MALLOC(da->data);
+	void *ptr = realloc(da->data, da->capacity * da->elem_size);
+	CHECK_MALLOC(ptr);
+	da->data = ptr;
 RET:
 	return;
 }

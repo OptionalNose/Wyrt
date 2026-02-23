@@ -689,7 +689,6 @@ void lexer_print_token_to_file(
 
 	fputs(" at ", file);
 	lexer_print_debug_to_file(file, &tok->debug.debug_info);
-	fputc('\n', file);
 }
 
 void lexer_print_debug_to_file(FILE *file, DebugInfo const *debug)

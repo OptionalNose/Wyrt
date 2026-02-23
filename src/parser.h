@@ -245,20 +245,74 @@ typedef union {
 	} typdef;
 } AstNode;
 
-void parser_gen_ast(
-	Token const *tokens, size_t token_count,
-	AstNode **nodes, size_t *node_count,
-	char *const *identifiers,
-	char *const *strings,
-	Error *err
-);
+typedef struct {
+	AstNode *nodes;
+	size_t len;
+	size_t cap;
+} NodeList;
 
-void parser_clean_ast(AstNode *nodes, size_t node_count);
+void nodelist_alloc(NodeList *list, size_t n, Error *err);
+void nodelist_push(NodeList *list, AstNode node, Error *err);
+AstNode nodelist_pop(NodeList *list);
+void nodelist_clean(NodeList *list);
 
-void parser_print_ast_to_file(
-	FILE *file,
-	AstNode *nodes,
-	size_t node_count,
+#define PARSE_STATE_LIST \
+	X(MODULE) \
+	X(FN_DEF) \
+	X(IDENT) \
+	X(FN_TYPE) \
+	X(FN_TYPE_LIST) \
+	X(FN_TYPE_ARG) \
+	X(FN_TYPE_RET) \
+	X(TYPE) \
+	X(FN_BODY) \
+	X(BLOCK) \
+	X(BLOCK_LIST) \
+	X(EXPR) \
+	X(VAR_DECL_INIT) \
+	X(ASSIGNMENT) \
+	X(STRUCT_TYPE) \
+	X(EXTERN) \
+	X(SEMICOLON)
+
+typedef enum {
+#define X(n) PARSE_STATE_ ##n,
+PARSE_STATE_LIST
+#undef X
+} ParseStateType;
+
+typedef struct {
+	ParseStateType type;
+	size_t ref; // index into ast
+} ParseState;
+
+typedef struct {
+	ParseState *state;
+	size_t len;
+	size_t cap;
+} ParseStack;
+
+void parsestack_alloc(ParseStack *ps, size_t n, Error *err);
+void parsestack_push(ParseStack *ps, ParseState state, Error *err);
+ParseState parsestack_pop(ParseStack *ps);
+ParseState *parsestack_top(ParseStack *ps);
+ParseState *parsestack_from_top(ParseStack *ps, size_t i);
+
+typedef struct {
+	Token const *tokens;
+	NodeList ast;
+	ParseStack parse_stack;
+	char *const *identifiers;
+	char *const *strings;
+} Parser;
+
+void parser_init(
+	Parser *prs,
+	Token const *tokens,
 	char *const *identifiers,
 	char *const *strings
 );
+void parser_clean(Parser *prs);
+
+void parser_print_ast(Parser *prs, FILE *file);
+void parser_parse(Parser *prs, Error *err);

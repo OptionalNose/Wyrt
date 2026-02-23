@@ -10,6 +10,7 @@
  * %i = Identiifer
  * %s = String
  * %z = size_t
+ * %T = Token*
  *
  * If a parameter would not be used (i.e. idents when there are no %i placeholders) they can be NULL
 */

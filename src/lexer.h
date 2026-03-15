@@ -30,6 +30,7 @@ typedef enum {
 
 	TOKEN_IDENT,
 	TOKEN_INT_LIT,
+	TOKEN_CHAR_LIT,
 	TOKEN_STRING_LIT,
 	TOKEN_ZSTRING_LIT,
 	TOKEN_CSTRING_LIT,
@@ -56,7 +57,23 @@ typedef enum {
 	TOKEN_DISCARD,
 
 	TOKEN_TYPEDEF,
-	TOKEN_ARROW
+	TOKEN_ARROW,
+
+	TOKEN_COMP_EQ,
+	TOKEN_COMP_GE,
+	TOKEN_COMP_LE,
+	TOKEN_COMP_NE,
+	TOKEN_COMP_GT,
+	TOKEN_COMP_LT,
+
+	TOKEN_LOGIC_AND,
+	TOKEN_LOGIC_OR,
+	TOKEN_LOGIC_NOT,
+
+	TOKEN_BIT_OR,
+
+	TOKEN_IF,
+	TOKEN_ELSE
 } TokenType;
 
 typedef struct {
@@ -90,6 +107,12 @@ typedef union {
 		DebugInfo debug_info;
 		size_t id;
 	} string_lit;
+
+	struct {
+		TokenType type;
+		DebugInfo debug_info;
+		char val;
+	} char_lit;
 } Token;
 
 typedef struct {

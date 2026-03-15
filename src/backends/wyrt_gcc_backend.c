@@ -41,6 +41,7 @@ void compile(WyrtContext vpctx, GenOptions options, const char *path, Error *err
 	}
 
 	gcc_jit_context_compile_to_file(ctx, format, path);
+	gcc_jit_context_dump_to_file(ctx, "ir", false);
 
 	return;
 }
@@ -178,6 +179,9 @@ static gcc_jit_type *gen_type(
 		break;
 	case TYPE_PRIMITIVE_VOID:
 		ret = gcc_jit_context_get_type(ctx, GCC_JIT_TYPE_VOID);
+		break;
+	case TYPE_PRIMITIVE_BOOL:
+		ret = gcc_jit_context_get_type(ctx, GCC_JIT_TYPE_BOOL);
 		break;
 
 	case TYPE_POINTER_CONST:
@@ -719,6 +723,8 @@ WyrtRvalue rvalue_binary_op(
 	gcc_jit_rvalue *lhs = vplhs;
 	gcc_jit_rvalue *rhs = vprhs;
 	gcc_jit_rvalue *res = NULL;
+	gcc_jit_location *loc = gcc_loc(ctx, debug, err);
+	if(*err) goto RET;
 
 	enum gcc_jit_binary_op gcc_op;
 	switch(op) {
@@ -734,6 +740,35 @@ WyrtRvalue rvalue_binary_op(
 	case AST_SUB:
 		gcc_op = GCC_JIT_BINARY_OP_MINUS;
 		break;
+	case AST_LOGIC_AND:
+		gcc_op = GCC_JIT_BINARY_OP_LOGICAL_AND;
+		break;
+	case AST_LOGIC_OR:
+		gcc_op = GCC_JIT_BINARY_OP_LOGICAL_OR;
+		break;
+	case AST_COMP_EQ:
+	case AST_COMP_GE:
+	case AST_COMP_LE:
+	case AST_COMP_NE:
+	case AST_COMP_GT:
+	case AST_COMP_LT: {
+		enum gcc_jit_comparison ops[] = {
+			GCC_JIT_COMPARISON_EQ,
+			GCC_JIT_COMPARISON_GE,
+			GCC_JIT_COMPARISON_LE,
+			GCC_JIT_COMPARISON_NE,
+			GCC_JIT_COMPARISON_GT,
+			GCC_JIT_COMPARISON_LT,
+		};
+		
+		res = gcc_jit_context_new_comparison(ctx, loc, ops[op - AST_COMP_EQ], lhs, rhs);
+		if(!res) {
+			fprintf(stderr, "[BACKEND] Could not generate comparison\n");
+			*err = ERROR_IO;
+			goto RET;
+		}
+		goto RET;
+	} break;
 	default:
 		assert(false);
 	}
@@ -764,6 +799,9 @@ WyrtRvalue rvalue_binary_op(
 	case TYPE_PRIMITIVE_S64:
 		t = gcc_jit_context_get_type(ctx, GCC_JIT_TYPE_INT64_T);
 		break;
+	case TYPE_PRIMITIVE_BOOL:
+		t = gcc_jit_context_get_type(ctx, GCC_JIT_TYPE_BOOL);
+		break;
 	default:
 		assert(false);
 	}
@@ -774,13 +812,87 @@ WyrtRvalue rvalue_binary_op(
 		goto RET;
 	}
 
-	gcc_jit_location *loc = gcc_loc(ctx, debug, err);
-	if(*err) goto RET;
-
 	res = gcc_jit_context_new_binary_op(ctx, loc, gcc_op, t, lhs, rhs);
 
 	if(!res) {
 		fprintf(stderr, "[BACKEND] Could not generate binary operation!\n");
+		*err = ERROR_IO;
+		goto RET;
+	}
+
+RET:
+	return res;
+}
+
+WyrtRvalue rvalue_unary_op(
+	WyrtContext vpctx,
+	const DebugInfo *debug,
+	AstNodeType op,
+	TypeType type,
+	WyrtRvalue vpval,
+	Error *err
+)
+{
+	gcc_jit_context *ctx = vpctx;
+	gcc_jit_rvalue *val = vpval;
+	gcc_jit_rvalue *res = NULL;
+
+	gcc_jit_location *loc = gcc_loc(ctx, debug, err);
+	if(*err) goto RET;
+
+	enum gcc_jit_unary_op gcc_op;
+	switch(op) {
+	case AST_LOGIC_NOT:
+		gcc_op = GCC_JIT_UNARY_OP_LOGICAL_NEGATE;
+		break;
+	default:
+		assert(false);	
+	}
+
+	gcc_jit_type *t;
+	switch(type) {
+	case TYPE_PRIMITIVE_BOOL:
+		t = gcc_jit_context_get_type(ctx, GCC_JIT_TYPE_BOOL);
+		break;
+	case TYPE_PRIMITIVE_U8:
+		t = gcc_jit_context_get_type(ctx, GCC_JIT_TYPE_UINT8_T);
+		break;
+	case TYPE_PRIMITIVE_U16:
+		t = gcc_jit_context_get_type(ctx, GCC_JIT_TYPE_UINT16_T);
+		break;
+	case TYPE_PRIMITIVE_U32:
+		t = gcc_jit_context_get_type(ctx, GCC_JIT_TYPE_UINT32_T);
+		break;
+	case TYPE_PRIMITIVE_U64:
+		t = gcc_jit_context_get_type(ctx, GCC_JIT_TYPE_UINT64_T);
+		break;
+	case TYPE_PRIMITIVE_S8:
+		t = gcc_jit_context_get_type(ctx, GCC_JIT_TYPE_INT8_T);
+		break;
+	case TYPE_PRIMITIVE_S16:
+		t = gcc_jit_context_get_type(ctx, GCC_JIT_TYPE_INT16_T);
+		break;
+	case TYPE_PRIMITIVE_S32:
+		t = gcc_jit_context_get_type(ctx, GCC_JIT_TYPE_INT32_T);
+		break;
+	case TYPE_PRIMITIVE_S64:
+		t = gcc_jit_context_get_type(ctx, GCC_JIT_TYPE_INT64_T);
+		break;
+	case TYPE_POINTER_CONST:
+	case TYPE_POINTER_ABYSS:
+	case TYPE_POINTER_VAR:
+		t = gcc_jit_context_get_type(ctx, GCC_JIT_TYPE_VOID_PTR);
+		break;
+	}
+	if(!t) {
+		fprintf(stderr, "[BACKEND] Could not generate type for unary operation!\n");
+		*err = ERROR_IO;
+		goto RET;
+	}
+
+	res = gcc_jit_context_new_unary_op(ctx, loc, gcc_op, t, val);
+	if(!res) {
+		fprintf(stderr, "[BACLEND] Could not generate unary operation!\n");
 		*err = ERROR_IO;
 		goto RET;
 	}
@@ -1255,6 +1367,52 @@ RET:
 	return;
 }
 
+void block_end_with_cond(
+	WyrtContext vpctx,
+	const DebugInfo *debug,
+	WyrtBlock vpblk,
+	WyrtRvalue vpcond,
+	WyrtBlock vpbr_true,
+	WyrtBlock vpbr_false,
+	Error *err
+)
+{
+	gcc_jit_context *ctx = vpctx;
+	gcc_jit_block *blk = vpblk;
+	gcc_jit_rvalue *cond = vpcond;
+	gcc_jit_block *br_true = vpbr_true;
+	gcc_jit_block *br_false = vpbr_false;
+
+	gcc_jit_location *loc = gcc_loc(ctx, debug, err);
+	if(*err) goto RET;
+
+	gcc_jit_block_end_with_conditional(blk, loc, cond, br_true, br_false);
+
+RET:
+	return;
+}
+
+void block_end_with_jump(
+	WyrtContext vpctx,
+	const DebugInfo *debug,
+	WyrtBlock vpblk,
+	WyrtBlock vpjmp,
+	Error *err
+)
+{
+	gcc_jit_context *ctx = vpctx;
+	gcc_jit_block *blk = vpblk;
+	gcc_jit_block *jmp = vpjmp;
+
+	gcc_jit_location *loc = gcc_loc(ctx, debug, err);
+	if(*err) goto RET;
+
+	gcc_jit_block_end_with_jump(blk, loc, jmp);
+
+RET:
+	return;
+}
+
 const WyrtBackend wyrtBackend = {
 	get_ctx,
 	compile,
@@ -1275,6 +1433,7 @@ const WyrtBackend wyrtBackend = {
 	rvalue_cstring_lit,
 
 	rvalue_binary_op,
+	rvalue_unary_op,
 	rvalue_address,
 	rvalue_field,
 	rvalue_fn_call,
@@ -1286,8 +1445,11 @@ const WyrtBackend wyrtBackend = {
 	lvalue_field,
 
 	new_block,
-	block_end_with_return,
 	block_add_eval,
 	block_add_assign,
 	block_add_compound_assign,
+
+	block_end_with_return,
+	block_end_with_cond,
+	block_end_with_jump,
 };

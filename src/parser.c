@@ -99,6 +99,11 @@ void parser_clean(Parser *prs)
 void nodelist_clean(NodeList *list)
 {
 	for(size_t i = 0; i < list->len; i++) {
+		if(list->nodes[i].type > AST_IF) {
+			fprintf(stderr, "Corrupted AST\n");
+			continue;
+		} 
+
 		switch(list->nodes[i].type) {
 		case AST_FN_TYPE:
 			free(list->nodes[i].fn_type.args);
@@ -163,6 +168,17 @@ void nodelist_clean(NodeList *list)
 		case AST_DISCARD:
 		case AST_ARROW:
 		case AST_TYPEDEF:
+		case AST_CHAR_LIT:
+		case AST_COMP_EQ:
+		case AST_COMP_GE:
+		case AST_COMP_LE:
+		case AST_COMP_NE:
+		case AST_COMP_GT:
+		case AST_COMP_LT:
+		case AST_LOGIC_AND:
+		case AST_LOGIC_OR:
+		case AST_LOGIC_NOT:
+		case AST_IF:
 			break;
 		}
 	}
@@ -288,7 +304,7 @@ void parser_print_ast(Parser *prs, FILE *file)
 			break;
 
 		case AST_ADDR:
-			fprintf(file, "&%zi", prs->ast.nodes[i].addr.base);
+			fprintf(file, "&%zi", prs->ast.nodes[i].unary_op.val);
 			break;
 		
 		case AST_POINTER_CONST:
@@ -304,7 +320,7 @@ void parser_print_ast(Parser *prs, FILE *file)
 			break;
 
 		case AST_DEREF:
-			fprintf(file, "*%zi", prs->ast.nodes[i].deref.ptr);
+			fprintf(file, "*%zi", prs->ast.nodes[i].unary_op.val);
 			break;
 
 		case AST_ARRAY:
@@ -419,6 +435,50 @@ void parser_print_ast(Parser *prs, FILE *file)
 				"typedef \"%s\" = %zi",
 				prs->identifiers[prs->ast.nodes[i].typdef.id],
 				prs->ast.nodes[i].typdef.backing
+			);
+			break;
+		case AST_CHAR_LIT:
+			fprintf(
+				file,
+				"Char %02X",
+				prs->ast.nodes[i].char_lit.val
+			);
+			break;
+		case AST_COMP_EQ:
+			fprintf(file, "%zi == %zi", prs->ast.nodes[i].binop.lhs, prs->ast.nodes[i].binop.rhs);
+			break;
+		case AST_COMP_GE:
+			fprintf(file, "%zi >= %zi", prs->ast.nodes[i].binop.lhs, prs->ast.nodes[i].binop.rhs);
+			break;
+		case AST_COMP_LE:
+			fprintf(file, "%zi <= %zi", prs->ast.nodes[i].binop.lhs, prs->ast.nodes[i].binop.rhs);
+			break;
+		case AST_COMP_NE:
+			fprintf(file, "%zi != %zi", prs->ast.nodes[i].binop.lhs, prs->ast.nodes[i].binop.rhs);
+			break;
+		case AST_COMP_GT:
+			fprintf(file, "%zi > %zi", prs->ast.nodes[i].binop.lhs, prs->ast.nodes[i].binop.rhs);
+			break;
+		case AST_COMP_LT:
+			fprintf(file, "%zi < %zi", prs->ast.nodes[i].binop.lhs, prs->ast.nodes[i].binop.rhs);
+			break;
+		case AST_LOGIC_AND:
+			fprintf(file, "%zi && %zi", prs->ast.nodes[i].binop.lhs, prs->ast.nodes[i].binop.rhs);
+			break;
+		case AST_LOGIC_OR:
+			fprintf(file, "%zi || %zi", prs->ast.nodes[i].binop.lhs, prs->ast.nodes[i].binop.rhs);
+			break;
+		case AST_LOGIC_NOT:
+			fprintf(file, "!%zi", prs->ast.nodes[i].unary_op.val);
+			break;
+		case AST_IF:
+			fprintf(
+				file,
+				"if(%zi; %zi) {%zi} else {%zi}\n",
+				prs->ast.nodes[i].if_statement.decl,
+				prs->ast.nodes[i].if_statement.condition,
+				prs->ast.nodes[i].if_statement.block,
+				prs->ast.nodes[i].if_statement.else_block
 			);
 			break;
 		}
@@ -866,6 +926,13 @@ static void handle_BLOCK(Parser *prs, size_t *index, Error *err)
 		goto RET;
 	}
 
+	prs->ast.nodes[parsestack_top(&prs->parse_stack)->ref] = (AstNode) {
+		.block = {
+			.type = AST_BLOCK,
+			.debug_info = prs->tokens[*index].debug.debug_info,
+		},
+	};
+
 	*index += 1;
 
 	parsestack_top(&prs->parse_stack)->type = PARSE_STATE_BLOCK_LIST;
@@ -879,17 +946,19 @@ static void handle_BLOCK_LIST(Parser *prs, size_t *index, Error *err)
 	AstNode *block = &prs->ast.nodes[parsestack_top(&prs->parse_stack)->ref];
 	if(block->block.statements) {
 		if(prs->tokens[*index].type != TOKEN_SEMICOLON) {
-			wyrt_diag(
-				stderr, prs->identifiers, prs->strings, NULL,
-				"Expected ';' after Statement, found %T\n",
-				&prs->tokens[*index]
-			);
-			*err = ERROR_UNEXPECTED_DATA;
-			goto RET;
+			if(prs->tokens[*index - 1].type != TOKEN_RCURLY) {
+				wyrt_diag(
+					stderr, prs->identifiers, prs->strings, NULL,
+					"Expected ';' after Statement, found %T\n",
+					&prs->tokens[*index]
+				);
+				*err = ERROR_UNEXPECTED_DATA;
+				goto RET;
+			}
+		} else {
+			*index += 1;
 		}
-		*index += 1;
 	}
-
 
 	if(prs->tokens[*index].type == TOKEN_RCURLY) {
 		parsestack_pop(&prs->parse_stack);
@@ -902,6 +971,14 @@ static void handle_BLOCK_LIST(Parser *prs, size_t *index, Error *err)
 	);
 
 	switch(prs->tokens[*index].type) {
+	case TOKEN_IF: {
+		block->block.statements[block->block.statement_count - 1] = prs->ast.len;
+		nodelist_alloc(&prs->ast, 1, err);
+		if(*err) goto RET;
+		parsestack_push(&prs->parse_stack, (ParseState) {PARSE_STATE_IF, prs->ast.len - 1}, err);
+		if(*err) goto RET;
+	} break;
+
 	case TOKEN_DISCARD: {
 		size_t ref = prs->ast.len + 1;
 		block->block.statements[block->block.statement_count - 1] = ref - 1;
@@ -961,52 +1038,11 @@ static void handle_BLOCK_LIST(Parser *prs, size_t *index, Error *err)
 
 	case TOKEN_CONST:
 	case TOKEN_VAR: {
-		size_t ref = prs->ast.len;
-		block->block.statements[block->block.statement_count - 1] = ref;
-
-		nodelist_alloc(&prs->ast, 2, err);
+		block->block.statements[block->block.statement_count - 1] = prs->ast.len;
+		nodelist_alloc(&prs->ast, 1, err);
 		if(*err) goto RET;
-
-		*index += 1;
-
-		if(prs->tokens[*index].type != TOKEN_IDENT) {
-			wyrt_diag(
-				stderr, prs->identifiers, prs->strings, NULL,
-				"Expected Identifier after 'const', found %T\n",
-				&prs->tokens[*index]
-			);
-			*err = ERROR_UNEXPECTED_DATA;
-			goto RET;
-		}
-
-		prs->ast.nodes[ref] = (AstNode) {
-			.var_decl = {
-				.type = AST_VAR_DECL,
-				.debug_info = prs->tokens[*index].debug.debug_info,
-				.mut = prs->tokens[*index - 1].type == TOKEN_VAR,
-				.id =  prs->tokens[*index].ident.id,
-				.data_type = ref + 1,
-			},
-		};
-
-		*index += 1;
-
-		if(prs->tokens[*index].type != TOKEN_COLON) {
-			wyrt_diag(
-				stderr, prs->identifiers, prs->strings, NULL,
-				"Expected ':' in Variable Declaration, found %T\n",
-				&prs->tokens[*index]
-			);
-			*err = ERROR_UNEXPECTED_DATA;
-			goto RET;
-		}
-
-		parsestack_push(&prs->parse_stack, (ParseState) {PARSE_STATE_VAR_DECL_INIT, ref}, err);
-		if(*err) goto RET;	
-		parsestack_push(&prs->parse_stack, (ParseState) {PARSE_STATE_TYPE, ref + 1}, err);
+		parsestack_push(&prs->parse_stack, (ParseState) {PARSE_STATE_VAR_DECL, prs->ast.len - 1}, err);
 		if(*err) goto RET;
-
-		*index += 1;
 	} break;
 
 	default:
@@ -1034,6 +1070,128 @@ RET:
 	return;
 }
 
+static void handle_IF(Parser *prs, size_t *index, Error *err)
+{
+	size_t ref = parsestack_pop(&prs->parse_stack).ref;
+
+	nodelist_alloc(&prs->ast, 1, err);
+	if(*err) goto RET;
+
+	prs->ast.nodes[prs->ast.len - 1] = (AstNode) {
+		.block = {
+			.type = AST_BLOCK,
+			.statements = NULL,
+			.statement_count = 0,
+		}
+	};
+
+	prs->ast.nodes[ref] = (AstNode) {
+		.if_statement = {
+			.type = AST_IF,
+			.debug_info = prs->tokens[*index].debug.debug_info,
+			.block = prs->ast.len - 1,
+			.else_block = 0,
+		},
+	};
+
+	*index += 1;
+	
+	if(prs->tokens[*index].type != TOKEN_LPAREN) {
+		wyrt_diag(
+			stderr, prs->identifiers, prs->strings, NULL,
+			"Expected '(' after 'if', found %T\n",
+			&prs->tokens[*index]
+		);
+		*err = ERROR_UNEXPECTED_DATA;
+		goto RET;
+	}
+
+	*index += 1;
+
+	parsestack_push(&prs->parse_stack, (ParseState) {PARSE_STATE_ELSE, ref}, err);
+	if(*err) goto RET;
+	parsestack_push(&prs->parse_stack, (ParseState) {PARSE_STATE_BLOCK, prs->ast.len - 1}, err);
+	if(*err) goto RET;
+	parsestack_push(&prs->parse_stack, (ParseState) {PARSE_STATE_RPAREN, ref}, err);
+	if(*err) goto RET;
+
+	if(prs->tokens[*index].type == TOKEN_CONST
+		|| prs->tokens[*index].type == TOKEN_VAR
+	) {
+		prs->ast.nodes[ref].if_statement.decl = prs->ast.len;
+		parsestack_push(&prs->parse_stack, (ParseState) {PARSE_STATE_CONDITION, ref}, err);
+		if(*err) goto RET;
+		parsestack_push(&prs->parse_stack, (ParseState) {PARSE_STATE_SEMICOLON}, err);
+		if(*err) goto RET;
+		parsestack_push(&prs->parse_stack, (ParseState) {PARSE_STATE_VAR_DECL, prs->ast.len}, err);
+		if(*err) goto RET;
+		nodelist_alloc(&prs->ast, 1, err);
+		if(*err) goto RET;
+	} else {
+		nodelist_alloc(&prs->ast, 1, err);
+		if(*err) goto RET;
+		prs->ast.nodes[ref].if_statement.condition = prs->ast.len - 1;
+		parsestack_push(&prs->parse_stack, (ParseState) {PARSE_STATE_EXPR, prs->ast.len - 1}, err);
+		if(*err) goto RET;
+	}
+
+RET:
+	return;
+}
+
+static void handle_VAR_DECL(Parser *prs, size_t *index, Error *err)
+{
+	size_t ref = parsestack_pop(&prs->parse_stack).ref;
+
+	*index += 1;
+
+	if(prs->tokens[*index].type != TOKEN_IDENT) {
+		wyrt_diag(
+			stderr, prs->identifiers, prs->strings, NULL,
+			"Expected Identifier after variable declaration, found %T\n",
+			&prs->tokens[*index]
+		);
+		*err = ERROR_UNEXPECTED_DATA;
+		goto RET;
+	}
+
+	prs->ast.nodes[ref] = (AstNode) {
+		.var_decl = {
+			.type = AST_VAR_DECL,
+			.debug_info = prs->tokens[*index].debug.debug_info,
+			.mut = prs->tokens[*index - 1].type == TOKEN_VAR,
+			.id =  prs->tokens[*index].ident.id,
+			.data_type = ref + 1,
+		},
+	};
+
+	*index += 1;
+
+	if(prs->tokens[*index].type != TOKEN_COLON) {
+		wyrt_diag(
+			stderr, prs->identifiers, prs->strings, NULL,
+			"Expected ':' in Variable Declaration, found %T\n",
+			&prs->tokens[*index]
+		);
+		*err = ERROR_UNEXPECTED_DATA;
+		goto RET;
+	}
+
+	nodelist_alloc(&prs->ast, 1, err);
+	if(*err) goto RET;
+
+
+	parsestack_push(&prs->parse_stack, (ParseState) {PARSE_STATE_VAR_DECL_INIT, ref}, err);
+	if(*err) goto RET;	
+	parsestack_push(&prs->parse_stack, (ParseState) {PARSE_STATE_TYPE, prs->ast.len - 1}, err);
+	if(*err) goto RET;
+
+	*index += 1;
+
+RET:
+	return;
+}
+
 typedef enum {
 	EXPR_NONE,
 	EXPR_ADD,
@@ -1049,6 +1207,15 @@ typedef enum {
 	EXPR_STRUCT_LIT,
 	EXPR_STRUCT_ACCESS,
 	EXPR_ARROW,
+	EXPR_COMP_EQ,
+	EXPR_COMP_GE,
+	EXPR_COMP_LE,
+	EXPR_COMP_NE,
+	EXPR_COMP_GT,
+	EXPR_COMP_LT,
+	EXPR_LOGIC_AND,
+	EXPR_LOGIC_OR,
+	EXPR_LOGIC_NOT
 } ExprOpType;
 
 typedef struct {
@@ -1068,6 +1235,15 @@ static ExprOpType token_to_op(TokenType type)
 	case TOKEN_AMPERSAND: return EXPR_ADDR;
 	case TOKEN_PERIOD: return EXPR_STRUCT_ACCESS;
 	case TOKEN_ARROW: return EXPR_ARROW;
+	case TOKEN_COMP_EQ: return EXPR_COMP_EQ;
+	case TOKEN_COMP_GE: return EXPR_COMP_GE;
+	case TOKEN_COMP_LE: return EXPR_COMP_LE;
+	case TOKEN_COMP_NE: return EXPR_COMP_NE;
+	case TOKEN_COMP_GT: return EXPR_COMP_GT;
+	case TOKEN_COMP_LT: return EXPR_COMP_LT;
+	case TOKEN_LOGIC_AND: return EXPR_LOGIC_AND;
+	case TOKEN_LOGIC_OR: return EXPR_LOGIC_OR;
+	case TOKEN_LOGIC_NOT: return EXPR_LOGIC_NOT;
 	default: assert(0);
 	}
 }
@@ -1075,18 +1251,35 @@ static ExprOpType token_to_op(TokenType type)
 static int op_precedence(ExprOpType type)
 {
 	switch(type) {
-	case EXPR_FN_CALL: return 0;
-	case EXPR_LPAREN: return 0;
-	case EXPR_ARRAY_LIT: return 0;
-	case EXPR_STRUCT_LIT: return 0;
-	case EXPR_ADD: return 1;
-	case EXPR_SUB: return 1;
-	case EXPR_MUL: return 2;
-	case EXPR_DIV: return 2;
-	case EXPR_ADDR: return 3;
-	case EXPR_DEREF: return 3;
-	case EXPR_STRUCT_ACCESS: return 4;
-	case EXPR_ARROW: return 4;
+	case EXPR_FN_CALL:
+	case EXPR_LPAREN:
+	case EXPR_ARRAY_LIT:
+	case EXPR_STRUCT_LIT:
+		return 0;
+	case EXPR_LOGIC_OR:
+		return 1;
+	case EXPR_LOGIC_AND:
+		return 2;
+	case EXPR_COMP_EQ:
+	case EXPR_COMP_GE:
+	case EXPR_COMP_LE:
+	case EXPR_COMP_NE:
+	case EXPR_COMP_GT:
+	case EXPR_COMP_LT:
+		return 3;
+	case EXPR_ADD:
+	case EXPR_SUB:
+		return 4;
+	case EXPR_MUL:
+	case EXPR_DIV:
+		return 5;
+	case EXPR_LOGIC_NOT:
+	case EXPR_ADDR:
+	case EXPR_DEREF:
+		return 6;
+	case EXPR_STRUCT_ACCESS:
+	case EXPR_ARROW:
+		return 7;
 	default: assert(0);
 	}
 }
@@ -1094,6 +1287,15 @@ static int op_precedence(ExprOpType type)
 static AstNodeType op_to_ast(ExprOpType type)
 {
 	switch(type) {
+	case EXPR_COMP_EQ: return AST_COMP_EQ;
+	case EXPR_COMP_GE: return AST_COMP_GE;
+	case EXPR_COMP_LE: return AST_COMP_LE;
+	case EXPR_COMP_NE: return AST_COMP_NE;
+	case EXPR_COMP_GT: return AST_COMP_GT;
+	case EXPR_COMP_LT: return AST_COMP_LT;
+	case EXPR_LOGIC_AND: return AST_LOGIC_AND;
+	case EXPR_LOGIC_OR: return AST_LOGIC_OR;
+	case EXPR_LOGIC_NOT: return AST_LOGIC_NOT;
 	case EXPR_ADD: return AST_ADD;
 	case EXPR_SUB: return AST_SUB;
 	case EXPR_MUL: return AST_MUL;
@@ -1111,6 +1313,7 @@ static void pop_op(Parser *prs, ExprOp *op, DynArr *free_list, size_t index, Err
 	size_t *rhs;
 	size_t *lhs;
 	switch(op->type) {
+	case EXPR_LOGIC_NOT:
 	case EXPR_ADDR:
 	case EXPR_DEREF:
 		rhs = dynarr_pop(free_list);
@@ -1127,10 +1330,10 @@ static void pop_op(Parser *prs, ExprOp *op, DynArr *free_list, size_t index, Err
 		nodelist_push(
 			&prs->ast,
 			(AstNode) {
-				.addr = {
+				.unary_op = {
 					.type = op_to_ast(op->type),
 					.debug_info = op->debug,
-					.base = *rhs,
+					.val = *rhs,
 				},
 			},
 			err
@@ -1138,6 +1341,14 @@ static void pop_op(Parser *prs, ExprOp *op, DynArr *free_list, size_t index, Err
 		if(*err) goto RET;
 		break;
 
+	case EXPR_COMP_EQ:
+	case EXPR_COMP_GE:
+	case EXPR_COMP_LE:
+	case EXPR_COMP_NE:
+	case EXPR_COMP_GT:
+	case EXPR_COMP_LT:
+	case EXPR_LOGIC_AND:
+	case EXPR_LOGIC_OR:
 	case EXPR_ADD:
 	case EXPR_SUB:
 	case EXPR_MUL:
@@ -1287,6 +1498,7 @@ static void handle_EXPR(Parser *prs, size_t *index, Error *err)
 			}
 			
 			*index += 1;
+			has_prev_op = true;
 		} break;
 
 		case TOKEN_ASSIGN:
@@ -1309,13 +1521,9 @@ static void handle_EXPR(Parser *prs, size_t *index, Error *err)
 			do {
 				op = (ExprOp*)dynarr_pop(&op_stack);
 				if(!op) {
-					wyrt_diag(
-						stderr, prs->identifiers, prs->strings, NULL,
-						"Extra %T\n",
-						&prs->tokens[*index]
-					);
-					*err = ERROR_UNEXPECTED_DATA;
-					goto RET;
+					ended = true;
+					*index -= 1;
+					break;
 				}
 
 				if(op->type == EXPR_LPAREN) break;
@@ -1325,17 +1533,23 @@ static void handle_EXPR(Parser *prs, size_t *index, Error *err)
 							.type = AST_FN_CALL,
 							.debug_info = op->debug,
 							.fn_id = op->id,
-							.arg_count = op->extra + 1,
-							.args = malloc((1 + op->extra) * sizeof(size_t)),
 						},
 					};
 
-					CHECK_MALLOC(fn_call.fn_call.args);
+					if(!op->extra && has_prev_op) {
+						fn_call.fn_call.args = NULL;
+						fn_call.fn_call.arg_count = 0;
+					} else {
+						fn_call.fn_call.arg_count = op->extra + 1;
+						fn_call.fn_call.args = malloc((1 + op->extra) * sizeof(size_t));
 
-					for(size_t i = 0; i < op->extra + 1; i++) {
-						fn_call.fn_call.args[op->extra - i] = *(size_t*)dynarr_from_back(&free_list, i);
+						CHECK_MALLOC(fn_call.fn_call.args);
+
+						for(size_t i = 0; i < op->extra + 1; i++) {
+							fn_call.fn_call.args[op->extra - i] = *(size_t*)dynarr_from_back(&free_list, i);
+						}
+						free_list.count -= op->extra + 1;
 					}
-					free_list.count -= op->extra + 1;
 
 					nodelist_push(&prs->ast, fn_call, err);
 					if(*err) goto RET;
@@ -1476,6 +1690,7 @@ static void handle_EXPR(Parser *prs, size_t *index, Error *err)
 			if(*err) goto RET;
 
 			*index += 1;
+			has_prev_op = true;
 		} break;
 
 		case TOKEN_RSQUARE: {
@@ -1540,6 +1755,7 @@ static void handle_EXPR(Parser *prs, size_t *index, Error *err)
 			if(*err) goto RET;
 
 			*index += 1;
+			has_prev_op = false;
 		} break;
 
 		case TOKEN_INT_LIT:
@@ -1570,7 +1786,38 @@ static void handle_EXPR(Parser *prs, size_t *index, Error *err)
 			if(*err) goto RET;
 
 			*index += 1;
-			has_prev_op = true;
+			has_prev_op = false;
+			break;
+
+		case TOKEN_CHAR_LIT:
+			if(!has_prev_op) {
+				wyrt_diag(
+					stderr, prs->identifiers, prs->strings, NULL,
+					"Malformed Expression: extra %T\n",
+					&prs->tokens[*index]
+				);
+				*err = ERROR_UNEXPECTED_DATA;
+				goto RET;
+			}
+
+			nodelist_push(
+				&prs->ast,
+				(AstNode) {
+					.int_lit = {
+						.type = AST_CHAR_LIT,
+						.debug_info = prs->tokens[*index].debug.debug_info,
+						.val = prs->tokens[*index].char_lit.val,
+					},
+				},
+				err
+			);
+			if(*err) goto RET;
+
+			dynarr_push(&free_list, &(size_t) {prs->ast.len - 1}, err);
+			if(*err) goto RET;
+
+			*index += 1;
+			has_prev_op = false;
 			break;
 
 		case TOKEN_UNDERSCORE:
@@ -1642,7 +1889,7 @@ static void handle_EXPR(Parser *prs, size_t *index, Error *err)
 				dynarr_push(&free_list, &(size_t) {prs->ast.len - 1}, err);
 				if(*err) goto RET;
 
-				has_prev_op = true;
+				has_prev_op = false;
 			}
 			*index += 1;
 			break;
@@ -1708,6 +1955,15 @@ static void handle_EXPR(Parser *prs, size_t *index, Error *err)
 				break;
 			}
 			//fallthrough
+		case TOKEN_COMP_EQ:
+		case TOKEN_COMP_GE:
+		case TOKEN_COMP_LE:
+		case TOKEN_COMP_NE:
+		case TOKEN_COMP_GT:
+		case TOKEN_COMP_LT:
+		case TOKEN_LOGIC_AND:
+		case TOKEN_LOGIC_OR:
+		case TOKEN_LOGIC_NOT:
 		case TOKEN_PLUS:
 		case TOKEN_MINUS:
 		case TOKEN_STAR:
@@ -2016,6 +2272,85 @@ static void handle_SEMICOLON(Parser *prs, size_t *index, Error *err)
 	*index += 1;
 
 	prs->parse_stack.len -= 1;
+RET:
+	return;
+}
+
+static void handle_RPAREN(Parser *prs, size_t *index, Error *err)
+{
+	if(prs->tokens[*index].type != TOKEN_RPAREN) {
+		wyrt_diag(
+			stderr, prs->identifiers, prs->strings, NULL,
+			"Expected ')', found %T\n",
+			&prs->tokens[*index]
+		);
+		*err = ERROR_UNEXPECTED_DATA;
+		goto RET;
+	}
+	*index += 1;
+	prs->parse_stack.len -= 1;
+RET:
+	return;
+}
+
+static void handle_ELSE(Parser *prs, size_t *index, Error *err)
+{
+	if(prs->tokens[*index].type == TOKEN_ELSE) {
+		size_t ref = parsestack_pop(&prs->parse_stack).ref;
+
+		*index += 1;
+
+		prs->ast.nodes[ref].if_statement.else_block = prs->ast.len;
+		nodelist_alloc(&prs->ast, 1, err);
+		if(*err) goto RET;
+
+		if(prs->tokens[*index].type == TOKEN_IF) {
+			prs->ast.nodes[prs->ast.len - 1] = (AstNode) {
+				.block = {
+					.type = AST_BLOCK,
+					.debug_info = prs->tokens[*index].debug.debug_info,
+					.statements = malloc(sizeof(size_t)),
+					.statement_count = 1,
+				},
+			};
+			CHECK_MALLOC(prs->ast.nodes[prs->ast.len - 1].block.statements);
+
+			prs->ast.nodes[prs->ast.len - 1].block.statements[0] = prs->ast.len;
+			nodelist_alloc(&prs->ast, 1, err);
+			if(*err) goto RET;
+
+			parsestack_push(&prs->parse_stack, (ParseState) {PARSE_STATE_IF, prs->ast.len - 1}, err);
+			if(*err) goto RET;
+		} else {
+			if(prs->tokens[*index].type != TOKEN_LCURLY) {
+				wyrt_diag(
+					stderr, prs->identifiers, prs->strings, NULL,
+					"Expected '{' after 'else', found %T\n",
+					&prs->tokens[*index]
+				);
+				*err = ERROR_UNEXPECTED_DATA;
+				goto RET;
+			}
+
+			parsestack_push(&prs->parse_stack, (ParseState) {PARSE_STATE_BLOCK, prs->ast.len - 1}, err);
+			if(*err) goto RET;
+		}
+	}
+RET:
+	return;
+}
+
+static void handle_CONDITION(Parser *prs, size_t *index, Error *err)
+{
+	if(prs->tokens[*index].type != TOKEN_RPAREN) {
+		prs->ast.nodes[parsestack_top(&prs->parse_stack)->ref].if_statement.condition = prs->ast.len;
+		nodelist_alloc(&prs->ast, 1, err);
+		if(*err) goto RET;
+		*parsestack_top(&prs->parse_stack) = (ParseState) {PARSE_STATE_EXPR, prs->ast.len - 1};
+	} else {
+		prs->parse_stack.len -= 1;
+	}
+
 RET:
 	return;
 }

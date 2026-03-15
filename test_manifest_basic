@@ -1,0 +1,80 @@
+// vim: set ft=c:
+
+{
+	.file = "mvp.w",
+	.exitcode = 25,
+},
+
+{
+	.file = "binop.w",
+	.exitcode = 33,
+},
+
+{
+	.file = "const.w",
+	.exitcode = 33,
+},
+
+{
+	.file = "fn_call.w",
+	.exitcode = 33,
+},
+
+{
+	.file = "var.w",
+	.exitcode = 33,
+},
+
+{
+	.file = "ptrs.w",
+	.exitcode = 49,
+},
+
+{
+	.file = "failing_abyss_read.w",
+	.should_fail = true
+},
+
+{
+	.file = "failing_types.w",
+	.should_fail = true,
+},
+
+{
+	.file = "array_and_slice.w",
+	.exitcode = 46,
+},
+
+{
+	.file = "failing_array_len_mismatch.w",
+	.should_fail = true,
+},
+
+{
+	.file = "struct.w",
+	.exitcode = 7,
+},
+
+{
+	.file = "failing_struct_incompatible.w",
+	.should_fail = true,
+},
+
+{
+	.file = "addressing.w",
+	.exitcode = 8,
+},
+
+{
+	.file = "helloworld.w",
+	.out = "Hello, World!\n",
+	.exitcode = 0,
+},
+
+{
+	.file = "typedef.w",
+	.out = "Hello, Typedef!\n",
+	.exitcode = 16,
+},
+
+

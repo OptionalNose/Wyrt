@@ -29,3 +29,8 @@ wyrt.exe_Release
 config.h
 out
 err
+build
+build.exe
+wyrt_gcc_backend.so
+wyrt_gcc_backend.dll
+in

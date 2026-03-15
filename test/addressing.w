@@ -7,5 +7,5 @@ fn main() u8
 
 fn foo(arg: &const u8) u8
 {
-	return *arg + 5;
+	return 5 + *arg;
 }

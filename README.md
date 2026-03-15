@@ -82,9 +82,3 @@ Some tests are designed to not compile, these have 'failing_' prefixing their na
 Expected Test output can be found in `test_manifest`.
 
 ---
-
-## Known Issues
-The build script compiles a debug version of the compiler with Address and Undefined Santizers enabled.
-These Sanitizers sometimes get upset about the large stack-depths in the parser and segfault :upside_down_face:.
-Just run the compiler repeatedly and it should work eventually.
-Alternatively, you could also just run it inside a debugger, and that seems to keep the Sanitzers from crashing.

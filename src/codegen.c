@@ -250,8 +250,8 @@ RET:
 	if(*err) {
 		dynarr_clean(&args);
 		dynarr_clean(&arg_ids);
-		dynarr_clean(&arg_bes);
 	}
+	dynarr_clean(&arg_bes);
 
 	return fn;
 }
@@ -426,15 +426,37 @@ static Expr gen_expr(CodeGen *cg, Type expected, size_t index, Scope *scope, Err
 		goto RET;
 	} break;
 
+	case AST_COMP_EQ:
+	case AST_COMP_GE:
+	case AST_COMP_LE:
+	case AST_COMP_NE:
+	case AST_COMP_GT:
+	case AST_COMP_LT:
+	case AST_LOGIC_AND:
+	case AST_LOGIC_OR:
 	case AST_MUL:
 	case AST_DIV:
 	case AST_ADD:
 	case AST_SUB: {
-		Expr lhs = gen_expr(cg, expected, expr.binop.lhs, scope, err);
-		if(*err) goto RET;
+		Expr lhs, rhs;
+		if(expr.type == AST_COMP_EQ
+			|| expr.type == AST_COMP_GE
+			|| expr.type == AST_COMP_LE
+			|| expr.type == AST_COMP_NE
+			|| expr.type == AST_COMP_GT
+		) {
+			lhs = gen_expr(cg, (Type) {.type = TYPE_NONE}, expr.binop.lhs, scope, err);
+			if(*err) goto RET;
 
-		Expr rhs = gen_expr(cg, expected, expr.binop.rhs, scope, err);
-		if(*err) goto RET;
+			rhs = gen_expr(cg, (Type) {.type = TYPE_NONE}, expr.binop.rhs, scope, err);
+			if(*err) goto RET;
+		} else {
+			lhs = gen_expr(cg, expected, expr.binop.lhs, scope, err);
+			if(*err) goto RET;
+
+			rhs = gen_expr(cg, expected, expr.binop.rhs, scope, err);
+			if(*err) goto RET;
+		}
 
 		bool rhs_compatible = types_are_compatible(&scope->tc, rhs.type, lhs.type);
 		bool lhs_compatible = types_are_compatible(&scope->tc, lhs.type, rhs.type);
@@ -442,7 +464,7 @@ static Expr gen_expr(CodeGen *cg, Type expected, size_t index, Scope *scope, Err
 		if(!lhs_compatible && !rhs_compatible) {
 			wyrt_diag(
 				stderr, cg->identifiers, cg->strings, &scope->tc,
-				"Canot Perform Arithmetic on Incompatible Types '%t' and '%t' at %l\n",
+				"Cannot Perform Arithmetic on Incompatible Types '%t' and '%t' at %l\n",
 				lhs.type,
 				rhs.type,
 				&expr.debug.debug_info
@@ -474,11 +496,31 @@ static Expr gen_expr(CodeGen *cg, Type expected, size_t index, Scope *scope, Err
 		}
 
 		if(rhs_compatible) {
-			ret.type = lhs.type;
+			if(expr.type == AST_COMP_EQ
+				|| expr.type == AST_COMP_GE
+				|| expr.type == AST_COMP_LE
+				|| expr.type == AST_COMP_NE
+				|| expr.type == AST_COMP_GT
+				|| expr.type == AST_COMP_LT
+			) {
+				ret.type = (Type) {.type = TYPE_PRIMITIVE_BOOL};
+			} else {
+				ret.type = lhs.type;
+			}
 			rhs.expr = cg->be.new_cast(cg->ctx, &expr.debug.debug_info, rhs.expr, lhs.type, &scope->tc, err);
 			if(*err) goto RET;
 		} else {
-			ret.type = rhs.type;
+			if(expr.type == AST_COMP_EQ
+				|| expr.type == AST_COMP_GE
+				|| expr.type == AST_COMP_LE
+				|| expr.type == AST_COMP_NE
+				|| expr.type == AST_COMP_GT
+				|| expr.type == AST_COMP_LT
+			) {
+				ret.type = (Type) {.type = TYPE_PRIMITIVE_BOOL};
+			} else {
+				ret.type = rhs.type;
+			}
 			lhs.expr = cg->be.new_cast(cg->ctx, &expr.debug.debug_info, lhs.expr, rhs.type, &scope->tc, err);
 			if(*err) goto RET;
 		}
@@ -495,6 +537,39 @@ static Expr gen_expr(CodeGen *cg, Type expected, size_t index, Scope *scope, Err
 		if(*err) goto RET;
 	} break;
 
+	case AST_LOGIC_NOT: {
+		Expr val = gen_expr(cg, expected, expr.unary_op.val, scope, err);
+		if(*err) goto RET;
+
+		if(!type_is_arithmetic(val.type)
+			&& !(
+				val.type.type == TYPE_POINTER_CONST
+				|| val.type.type == TYPE_POINTER_ABYSS
+				|| val.type.type == TYPE_POINTER_VAR
+		)) {
+			wyrt_diag(
+				stderr, cg->identifiers, cg->strings, &scope->tc,
+				"Cannot Perform Arithmetic on non-arithmetic Type '%t' at %l\n",
+				val.type,
+				&expr.debug.debug_info
+			);
+			*err = ERROR_UNEXPECTED_DATA;
+			goto RET;
+		}
+
+		ret.expr = cg->be.rvalue_unary_op(
+			cg->ctx,
+			&expr.debug.debug_info,
+			expr.type,
+			TYPE_PRIMITIVE_BOOL,
+			val.expr,
+			err
+		);
+		if(*err) goto RET;
+
+		ret.type = (Type) {TYPE_PRIMITIVE_BOOL};
+	} break;
+
 	case AST_FN_CALL:
 		ret = gen_fn_call(cg, expr, scope, err);
 		if(*err) goto RET;
@@ -502,7 +577,7 @@ static Expr gen_expr(CodeGen *cg, Type expected, size_t index, Scope *scope, Err
 
 	case AST_DEREF: {
 		Type ptr_type = types_get_ptr(&scope->tc, expected, TYPE_POINTER_CONST);
-		Expr ptr = gen_expr(cg, ptr_type, expr.deref.ptr, scope, err);
+		Expr ptr = gen_expr(cg, ptr_type, expr.unary_op.val, scope, err);
 		if(*err) goto RET;
 		
 		WyrtLvalue *lval = cg->be.lvalue_deref(cg->ctx, &expr.debug.debug_info, ptr.expr, err);
@@ -512,7 +587,7 @@ static Expr gen_expr(CodeGen *cg, Type expected, size_t index, Scope *scope, Err
 	} break;
 	
 	case AST_ADDR: {
-		Lvalue val = gen_lvalue(cg, expr.addr.base, scope, err);
+		Lvalue val = gen_lvalue(cg, expr.unary_op.val, scope, err);
 		if(*err) goto RET;
 
 		ret.expr = cg->be.rvalue_address(cg->ctx, &expr.debug.debug_info, val.lvalue, err);
@@ -523,6 +598,12 @@ static Expr gen_expr(CodeGen *cg, Type expected, size_t index, Scope *scope, Err
 			val.type,
 			val.read ? (val.mut ? TYPE_POINTER_VAR : TYPE_POINTER_CONST) : TYPE_POINTER_ABYSS
 		);
+	} break;
+
+	case AST_CHAR_LIT: {
+		ret.expr = cg->be.rvalue_int_lit(cg->ctx, expr.char_lit.val, TYPE_PRIMITIVE_U8, err);
+		if(*err) goto RET;
+		ret.type.type = TYPE_PRIMITIVE_U8;
 	} break;
 
 	case AST_ARRAY_LIT: {
@@ -1162,7 +1243,7 @@ static Lvalue gen_lvalue(CodeGen *cg, size_t index, Scope *scope, Error *err)
 	} break;	
 
 	case AST_DEREF: {
-		Expr ptr = gen_expr(cg, (Type) {.type = TYPE_NONE}, var.deref.ptr, scope, err);
+		Expr ptr = gen_expr(cg, (Type) {.type = TYPE_NONE}, var.unary_op.val, scope, err);
 		if(*err) goto RET;
 
 		if(ptr.type.type != TYPE_POINTER_ABYSS
@@ -1405,6 +1486,472 @@ RET_FAIL:
 	return ret;
 }
 
+static void gen_block(
+	CodeGen *cg,
+	const AstNode *block,
+	WyrtBlock *be_block,
+	WyrtFunction fn,
+	Type ret_type,
+	bool *returned,
+	const Scope *parent,
+	Error *err
+);
+
+static void gen_if(
+	CodeGen *cg,
+	const AstNode *statement,
+	WyrtBlock *be_block,
+	WyrtFunction fn,
+	Type ret_type,
+	bool *returned,
+	Scope *parent,
+	Error *err
+)
+{
+	Scope new;
+	scope_init(&new, parent, err);
+	if(*err) goto RET;
+
+	WyrtRvalue cond;
+	if(statement->if_statement.decl) {
+		new.var_count += 1;
+		new.vars = realloc(new.vars, sizeof(Var) * sizeof(new.var_count));
+		CHECK_MALLOC(new.vars);
+		new.be_vars = realloc(new.be_vars, sizeof(WyrtLvalue) * sizeof(new.var_count));
+		CHECK_MALLOC(new.be_vars);
+
+		AstNode decl = cg->nodes[statement->if_statement.decl];
+		new.vars[new.var_count - 1] = (Var) {
+			.id = decl.var_decl.id,
+			.type = type_from_ast(&parent->tc, cg->nodes, decl.var_decl.data_type, err),
+			.mut = decl.var_decl.mut,
+			.declared = true,
+		};
+		if(*err) goto RET;
+
+		new.be_vars[new.var_count - 1] = cg->be.block_new_variable(
+			cg->ctx,
+			&decl.debug.debug_info,
+			*be_block,
+			new.vars[new.var_count - 1].type,
+			&parent->tc,
+			cg->identifiers[decl.var_decl.id],
+			err
+		);
+		if(*err) goto RET;
+
+		if(!decl.var_decl.initial) {
+			wyrt_diag(
+				stderr, cg->identifiers, cg->strings, &parent->tc,
+				"Declaration in if-statement not initialized at %l\n",
+				&decl.debug.debug_info
+			);
+			*err = ERROR_UNEXPECTED_DATA;
+			goto RET;
+		}
+
+		Expr init = gen_expr(cg, new.vars[new.var_count - 1].type, decl.var_decl.initial, parent, err);
+		if(*err) goto RET;
+
+		cg->be.block_add_assign(
+			cg->ctx,
+			&decl.debug.debug_info,
+			*be_block,
+			new.be_vars[new.var_count - 1],
+			init.expr,
+			err
+		);
+		if(*err) goto RET;
+	
+		if(!statement->if_statement.condition) {
+			cond = cg->be.rvalue_from_lvalue(new.be_vars[new.var_count - 1]);
+		} else {
+			cond = gen_expr(cg, (Type) {TYPE_NONE}, statement->if_statement.condition, &new, err).expr;
+			if(*err) goto RET;
+		}
+	} else {
+		cond = gen_expr(cg, (Type) {TYPE_NONE}, statement->if_statement.condition, &new, err).expr;
+	}
+
+	WyrtBlock true_block = cg->be.new_block(cg->ctx, fn, err);
+	if(*err) goto RET;
+
+	WyrtBlock after = cg->be.new_block(cg->ctx, fn, err);
+	if(*err) goto RET;
+
+	if(statement->if_statement.else_block) {
+		WyrtBlock else_block = cg->be.new_block(cg->ctx, fn, err);
+		if(*err) goto RET;
+
+		cg->be.block_end_with_cond(
+			cg->ctx,
+			&statement->debug.debug_info,
+			*be_block,
+			cond,
+			true_block,
+			else_block,
+			err
+		);
+		if(*err) goto RET;
+		
+		bool true_returns = false;
+		gen_block(cg, &cg->nodes[statement->if_statement.block], &true_block, fn, ret_type, &true_returns, &new, err);
+		if(*err) goto RET;
+
+		bool false_returns = false;
+		gen_block(cg, &cg->nodes[statement->if_statement.else_block], &else_block, fn, ret_type, &false_returns, &new, err);
+		if(*err) goto RET;
+
+		if(!true_returns) {
+			cg->be.block_end_with_jump(
+				cg->ctx,
+				&statement->debug.debug_info,
+				true_block,
+				after,
+				err
+			);
+			if(*err) goto RET;
+		}
+
+		if(!false_returns) {
+			cg->be.block_end_with_jump(
+				cg->ctx,
+				&statement->debug.debug_info,
+				else_block,
+				after,
+				err
+			);
+			if(*err) goto RET;
+		}
+
+		*returned = true_returns && false_returns;
+	} else {
+		cg->be.block_end_with_cond(
+			cg->ctx,
+			&statement->debug.debug_info,
+			*be_block,
+			cond,
+			true_block,
+			after,
+			err
+		);
+		if(*err) goto RET;
+
+		gen_block(cg, &cg->nodes[statement->if_statement.block], &true_block, fn, ret_type, returned, &new, err);
+		if(*err) goto RET;
+
+		cg->be.block_end_with_jump(
+			cg->ctx,
+			&statement->debug.debug_info,
+			true_block,
+			after,
+			err
+		);
+		if(*err) goto RET;
+	}
+
+	*be_block = after;
+
+RET:
+	scope_clean(&new);
+	return;
+}
+
+static void gen_block(
+	CodeGen *cg,
+	const AstNode *block,
+	WyrtBlock *be_block,
+	WyrtFunction fn,
+	Type ret_type,
+	bool *returned,
+	const Scope *parent,
+	Error *err
+)
+{
+	Scope scope;
+	DynArr be_vars;
+	dynarr_init(&be_vars, sizeof(WyrtLvalue));
+	DynArr vars;
+	dynarr_init(&vars, sizeof(Var));
+
+	scope_init(&scope, parent, err);
+	if(*err) goto RET;
+
+	for(size_t i = 0; i < block->block.statement_count; i++) {
+		const AstNode statement = cg->nodes[block->block.statements[i]];
+
+		if(statement.type == AST_VAR_DECL) {
+			Var var;
+			WyrtLvalue be_var = gen_var_decl(cg, &statement, *be_block, &var, &scope, err);
+			if(*err) {
+				dynarr_clean(&vars);
+				dynarr_clean(&be_vars);
+				goto RET;
+			}
+
+			dynarr_push(&be_vars, &be_var, err);
+			if(*err) {
+				dynarr_clean(&vars);
+				dynarr_clean(&be_vars);
+				goto RET;
+			}
+
+			dynarr_push(&vars, &var, err);
+			if(*err) {
+				dynarr_clean(&vars);
+				dynarr_clean(&be_vars);
+				goto RET;
+			}
+		}
+	}
+
+	if(vars.count > 0) {
+		scope.be_vars = realloc(scope.be_vars, sizeof(WyrtLvalue) * (scope.var_count + be_vars.count));
+		CHECK_MALLOC(scope.be_vars);
+		scope.vars = realloc(scope.vars, sizeof(Var) * (scope.var_count + vars.count));
+		CHECK_MALLOC(scope.vars);
+		memcpy(scope.be_vars + scope.var_count * sizeof(WyrtLvalue), be_vars.data, sizeof(WyrtLvalue) * be_vars.count);
+		memcpy(scope.vars + scope.var_count * sizeof(Var), vars.data, sizeof(Var) * vars.count);
+		scope.var_count = scope.var_count + vars.count;
+	}
+
+	size_t varnum = 0;
+	for(size_t i = 0; i < block->block.statement_count; i++) {
+		const AstNode statement = cg->nodes[block->block.statements[i]];
+
+		switch(statement.type) {
+		case AST_IF: {
+			gen_if(cg, &statement, be_block, fn, ret_type, returned, &scope, err);
+			if(*err) goto RET;
+		} break;
+
+		case AST_DISCARD: {
+			Expr expr = gen_expr(
+				cg,
+				(Type) {.type = TYPE_NONE},
+				statement.discard.value,
+				&scope,
+				err
+			);
+			if(*err) goto RET;
+						
+			cg->be.block_add_eval(
+				cg->ctx,
+				&statement.debug.debug_info,
+				*be_block,
+				expr.expr,
+				err
+			);
+			if(*err) goto RET;
+		} break;
+
+		case AST_FN_CALL: {
+			bool found = false;
+			for(size_t i = 0; i < cg->fn_count; i++) {
+				if(cg->fn_sigs[i].id == statement.fn_call.fn_id) {
+					if(cg->fn_sigs[i].ret.type != TYPE_PRIMITIVE_VOID) {
+						wyrt_diag(
+							stderr, cg->identifiers, cg->strings, &scope.tc,
+							"Cannot implicitly discard return value of function '%i' at %l, "
+							"Consider using the 'discard' keyword\n",
+							statement.fn_call.fn_id,
+							&statement.debug.debug_info
+						);
+						*err = ERROR_UNEXPECTED_DATA;
+						goto RET;
+					}
+					Expr val = gen_fn_call(cg, statement, &scope, err);
+					if(*err) goto RET;
+					cg->be.block_add_eval(
+						cg->ctx,
+						&statement.debug.debug_info,
+						*be_block,
+						val.expr,
+						err
+					);
+					if(*err) goto RET;
+					found = true;
+					break;
+				}
+			}
+
+			if(found) break;
+
+			wyrt_diag(
+				stderr, cg->identifiers, cg->strings, &scope.tc,
+				"Undeclared Function '%i' at %l\n",
+				statement.fn_call.fn_id,
+				&statement.debug.debug_info
+			);
+			*err = ERROR_UNEXPECTED_DATA;
+			goto RET;
+		} break;
+
+		case AST_VAR_DECL: {
+			if(statement.var_decl.initial) {
+				Expr expr = gen_expr(
+					cg,
+					scope.vars[varnum].type,
+					statement.var_decl.initial,
+					&scope,
+					err
+				);
+				if(*err) goto RET;
+
+				cg->be.block_add_assign(
+					cg->ctx,
+					&statement.debug.debug_info,
+					*be_block,
+					scope.be_vars[varnum],
+					expr.expr,
+					err
+				);
+				if(*err) goto RET;
+			} else {
+				if(!scope.vars[varnum].mut) {
+					fprintf(stderr, "Error: const Variable uninitialized at ");
+					lexer_print_debug_to_file(stderr, &statement.debug.debug_info);
+					fprintf(stderr, "\n");
+					*err = ERROR_UNDEFINED; // Prevent malformed program
+					goto RET;
+				}
+			}
+			scope.vars[varnum].declared = true;
+			varnum += 1;
+		} break;
+
+		case AST_ASSIGN: {
+			Lvalue lhs = gen_lvalue(
+				cg,
+				statement.assign.var,
+				&scope,
+				err
+			);
+			if(*err) goto RET;
+
+			if(!lhs.mut) {
+				wyrt_diag(
+					stderr, cg->identifiers, cg->strings, &scope.tc,
+					"Cannot assign to const value at %l\n",
+					&statement.debug.debug_info
+				);
+				*err = ERROR_UNEXPECTED_DATA;
+				goto RET;
+			}
+
+			Expr rhs = gen_expr(
+				cg,
+				lhs.type,
+				statement.assign.expr,
+				&scope,
+				err
+			);
+			if(*err) goto RET;
+
+			cg->be.block_add_assign(
+				cg->ctx,
+				&statement.debug.debug_info,
+				*be_block,
+				lhs.lvalue,
+				rhs.expr,
+				err
+			);
+			if(*err) goto RET;
+		} break;
+
+		case AST_ADD_ASSIGN:
+		case AST_SUB_ASSIGN:
+		case AST_MUL_ASSIGN:
+		case AST_DIV_ASSIGN: {
+			Lvalue lhs = gen_lvalue(
+				cg,
+				statement.assign.var,
+				&scope,
+				err
+			);
+			if(*err) goto RET;
+
+			if(!lhs.mut || !lhs.read) {
+				wyrt_diag(
+					stderr, cg->identifiers, cg->strings, &scope.tc,
+					"Cannot Perform Compound Assignment on non-'var' Value at %l\n",
+					&statement.debug.debug_info
+				);
+				*err = ERROR_UNEXPECTED_DATA;
+				goto RET;
+			}
+
+			Expr rhs = gen_expr(
+				cg,
+				lhs.type,
+				statement.assign.expr,
+				&scope,
+				err
+			);
+			if(*err) goto RET;
+
+			cg->be.block_add_compound_assign(
+				cg->ctx,
+				&statement.debug.debug_info,
+				*be_block,
+				lhs.lvalue,
+				rhs.expr,
+				statement.type,
+				err
+			);
+			if(*err) goto RET;
+		} break;
+		
+		case AST_RET:
+			*returned = true;
+			if(ret_type.type == TYPE_PRIMITIVE_VOID) {
+				if(statement.ret.return_val) {
+					fprintf(stderr, "Cannot Return a Value from a void function at ");
+					lexer_print_debug_to_file(stderr, &statement.debug.debug_info);
+					fprintf(stderr, "\n");
+					*err = ERROR_UNEXPECTED_DATA;
+					goto RET;
+				}
+
+				cg->be.block_end_with_return(
+					cg->ctx,
+					&statement.debug.debug_info,
+					*be_block,
+					NULL,
+					err
+				);
+				if(*err) goto RET;
+			} else {
+				Expr val = gen_expr(cg, ret_type, statement.ret.return_val, &scope, err);
+				if(*err) goto RET;
+
+				cg->be.block_end_with_return(
+					cg->ctx,
+					&statement.debug.debug_info,
+					*be_block,
+					val.expr,
+					err
+				);
+				if(*err) goto RET;
+			}
+			break;
+
+		default:
+			fprintf(stderr, "Invalid Statement at ");
+			lexer_print_debug_to_file(stderr, &statement.debug.debug_info);
+			fprintf(stderr, "\n");
+			*err = ERROR_UNEXPECTED_DATA;
+			goto RET;
+		}
+	}
+
+RET:
+	dynarr_clean(&be_vars);
+	dynarr_clean(&vars);
+	scope_clean(&scope);
+	return;
+}
+
 static void gen_fn(CodeGen *cg, FnSig sig, size_t index, WyrtFunction fn, const Scope *global, Error *err)
 {
 	const AstNode def = cg->nodes[index];
@@ -1511,6 +2058,7 @@ static void gen_fn(CodeGen *cg, FnSig sig, size_t index, WyrtFunction fn, const 
 		}
 	}
 
+
 	WyrtBlock be_block = cg->be.new_block(
 		cg->ctx,
 		fn,
@@ -1518,262 +2066,10 @@ static void gen_fn(CodeGen *cg, FnSig sig, size_t index, WyrtFunction fn, const 
 	);
 	if(*err) goto RET;
 
-	for(size_t i = 0; i < block.block.statement_count; i++) {
-		const AstNode statement = cg->nodes[block.block.statements[i]];
-
-		if(statement.type == AST_VAR_DECL) {
-			Var var;
-			WyrtLvalue be_var = gen_var_decl(cg, &statement, be_block, &var, &scope, err);
-			if(*err) {
-				dynarr_clean(&vars);
-				dynarr_clean(&be_vars);
-				goto RET;
-			}
-
-			dynarr_push(&be_vars, &be_var, err);
-			if(*err) {
-				dynarr_clean(&vars);
-				dynarr_clean(&be_vars);
-				goto RET;
-			}
-
-			dynarr_push(&vars, &var, err);
-			if(*err) {
-				dynarr_clean(&vars);
-				dynarr_clean(&be_vars);
-				goto RET;
-			}
-		}
-	}
-
-	scope.be_vars = be_vars.data;
-	scope.vars = vars.data;
-	scope.var_count = vars.count;
-
-	size_t varnum = 0;
 	bool returned = false;
-	for(size_t i = 0; i < block.block.statement_count; i++) {
-		const AstNode statement = cg->nodes[block.block.statements[i]];
 
-		switch(statement.type) {
-		case AST_DISCARD: {
-			Expr expr = gen_expr(
-				cg,
-				(Type) {.type = TYPE_NONE},
-				statement.discard.value,
-				&scope,
-				err
-			);
-			if(*err) goto RET;
-						
-			cg->be.block_add_eval(
-				cg->ctx,
-				&statement.debug.debug_info,
-				be_block,
-				expr.expr,
-				err
-			);
-			if(*err) goto RET;
-		} break;
-
-		case AST_FN_CALL: {
-			bool found = false;
-			for(size_t i = 0; i < cg->fn_count; i++) {
-				if(cg->fn_sigs[i].id == statement.fn_call.fn_id) {
-					if(cg->fn_sigs[i].ret.type != TYPE_PRIMITIVE_VOID) {
-						wyrt_diag(
-							stderr, cg->identifiers, cg->strings, &scope.tc,
-							"Cannot implicitly discard return value of function '%i' at %l, "
-							"Consider using the 'discard' keyword\n",
-							statement.fn_call.fn_id,
-							&statement.debug.debug_info
-						);
-						*err = ERROR_UNEXPECTED_DATA;
-						goto RET;
-					}
-					Expr val = gen_fn_call(cg, statement, &scope, err);
-					if(*err) goto RET;
-					cg->be.block_add_eval(
-						cg->ctx,
-						&statement.debug.debug_info,
-						be_block,
-						val.expr,
-						err
-					);
-					if(*err) goto RET;
-					found = true;
-					break;
-				}
-			}
-
-			if(found) break;
-
-			wyrt_diag(
-				stderr, cg->identifiers, cg->strings, &scope.tc,
-				"Undeclared Function '%i' at %l\n",
-				statement.fn_call.fn_id,
-				&statement.debug.debug_info
-			);
-			*err = ERROR_UNEXPECTED_DATA;
-			goto RET;
-		} break;
-
-		case AST_VAR_DECL: {
-			if(statement.var_decl.initial) {
-				Expr expr = gen_expr(
-					cg,
-					scope.vars[i].type,
-					statement.var_decl.initial,
-					&scope,
-					err
-				);
-				if(*err) goto RET;
-
-				cg->be.block_add_assign(
-					cg->ctx,
-					&statement.debug.debug_info,
-					be_block,
-					scope.be_vars[i],
-					expr.expr,
-					err
-				);
-				if(*err) goto RET;
-			} else {
-				if(!scope.vars[varnum].mut) {
-					fprintf(stderr, "Error: const Variable uninitialized at ");
-					lexer_print_debug_to_file(stderr, &statement.debug.debug_info);
-					fprintf(stderr, "\n");
-					*err = ERROR_UNDEFINED; // Prevent malformed program
-					goto RET;
-				}
-			}
-			scope.vars[varnum].declared = true;
-			varnum += 1;
-		} break;
-		case AST_ASSIGN: {
-			Lvalue lhs = gen_lvalue(
-				cg,
-				statement.assign.var,
-				&scope,
-				err
-			);
-			if(*err) goto RET;
-
-			if(!lhs.mut) {
-				wyrt_diag(
-					stderr, cg->identifiers, cg->strings, &scope.tc,
-					"Cannot assign to const value at %l\n",
-					&statement.debug.debug_info
-				);
-				*err = ERROR_UNEXPECTED_DATA;
-				goto RET;
-			}
-
-			Expr rhs = gen_expr(
-				cg,
-				lhs.type,
-				statement.assign.expr,
-				&scope,
-				err
-			);
-			if(*err) goto RET;
-
-			cg->be.block_add_assign(
-				cg->ctx,
-				&statement.debug.debug_info,
-				be_block,
-				lhs.lvalue,
-				rhs.expr,
-				err
-			);
-			if(*err) goto RET;
-		} break;
-
-		case AST_ADD_ASSIGN:
-		case AST_SUB_ASSIGN:
-		case AST_MUL_ASSIGN:
-		case AST_DIV_ASSIGN: {
-			Lvalue lhs = gen_lvalue(
-				cg,
-				statement.assign.var,
-				&scope,
-				err
-			);
-			if(*err) goto RET;
-
-			if(!lhs.mut || !lhs.read) {
-				wyrt_diag(
-					stderr, cg->identifiers, cg->strings, &scope.tc,
-					"Cannot Perform Compound Assignment on non-'var' Value at %l\n",
-					&statement.debug.debug_info
-				);
-				*err = ERROR_UNEXPECTED_DATA;
-				goto RET;
-			}
-
-			Expr rhs = gen_expr(
-				cg,
-				lhs.type,
-				statement.assign.expr,
-				&scope,
-				err
-			);
-			if(*err) goto RET;
-
-			cg->be.block_add_compound_assign(
-				cg->ctx,
-				&statement.debug.debug_info,
-				be_block,
-				lhs.lvalue,
-				rhs.expr,
-				statement.type,
-				err
-			);
-			if(*err) goto RET;
-		} break;
-		
-		case AST_RET:
-			returned = true;
-			if(sig.ret.type == TYPE_PRIMITIVE_VOID) {
-				if(statement.ret.return_val) {
-					fprintf(stderr, "Cannot Return a Value from a void function at ");
-					lexer_print_debug_to_file(stderr, &statement.debug.debug_info);
-					fprintf(stderr, "\n");
-					*err = ERROR_UNEXPECTED_DATA;
-					goto RET;
-				}
-
-				cg->be.block_end_with_return(
-					cg->ctx,
-					&statement.debug.debug_info,
-					be_block,
-					NULL,
-					err
-				);
-				if(*err) goto RET;
-			} else {
-				Expr val = gen_expr(cg, sig.ret, statement.ret.return_val, &scope, err);
-				if(*err) goto RET;
-
-				cg->be.block_end_with_return(
-					cg->ctx,
-					&statement.debug.debug_info,
-					be_block,
-					val.expr,
-					err
-				);
-				if(*err) goto RET;
-			}
-			break;
-
-		default:
-			fprintf(stderr, "Invalid Statement at ");
-			lexer_print_debug_to_file(stderr, &statement.debug.debug_info);
-			fprintf(stderr, "\n");
-			*err = ERROR_UNEXPECTED_DATA;
-			goto RET;
-		}
-	}
+	gen_block(cg, &block, &be_block, fn, sig.ret, &returned, &scope, err);
+	if(*err) goto RET;
 
 	if(!returned) {
 		if(sig.ret.type != TYPE_PRIMITIVE_VOID) {
@@ -1925,7 +2221,7 @@ void scope_init(Scope *scope, const Scope *parent, Error *err)
 
 			scope->be_params = malloc(parent->param_count * sizeof(WyrtRvalue));
 			CHECK_MALLOC(scope->be_params);
-			memcpy(scope->be_params, parent->be_params, parent->param_count * sizeof(Var));
+			memcpy(scope->be_params, parent->be_params, parent->param_count * sizeof(WyrtRvalue));
 		}
 		if(parent->var_count) {
 			scope->var_count = parent->var_count;
@@ -1934,9 +2230,9 @@ void scope_init(Scope *scope, const Scope *parent, Error *err)
 			CHECK_MALLOC(scope->vars);
 			memcpy(scope->vars, parent->vars, parent->var_count * sizeof(Var));
 
-			scope->be_vars = malloc(parent->var_count * sizeof(Var));
+			scope->be_vars = malloc(parent->var_count * sizeof(WyrtRvalue));
 			CHECK_MALLOC(scope->be_vars);
-			memcpy(scope->be_vars, parent->be_vars, parent->var_count * sizeof(Var));
+			memcpy(scope->be_vars, parent->be_vars, parent->var_count * sizeof(WyrtRvalue));
 		}
 
 		types_copy(&scope->tc, &parent->tc, err);

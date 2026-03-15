@@ -1,0 +1,94 @@
+// vim: set ft=c:
+{
+	.file = "if.w",
+	.in = "a",
+	.out = "Please enter an option (a, b, c-f, or A): \nResult: \no\n",
+	.exitcode = 0,
+},
+
+{
+	.file = "if.w",
+	.in = "b",
+	.out = "Please enter an option (a, b, c-f, or A): \nResult: \nk\n",
+	.exitcode = 0,
+},
+
+{
+	.file = "if.w",
+	.in = "c",
+	.out = "Please enter an option (a, b, c-f, or A): \nResult: \ns\n",
+	.exitcode = 0,
+},
+
+{
+	.file = "if.w",
+	.in = "d",
+	.out = "Please enter an option (a, b, c-f, or A): \nResult: \ns\n",
+	.exitcode = 0,
+},
+
+{
+	.file = "if.w",
+	.in = "e",
+	.out = "Please enter an option (a, b, c-f, or A): \nResult: \ns\n",
+	.exitcode = 0,
+},
+
+{
+	.file = "if.w",
+	.in = "f",
+	.out = "Please enter an option (a, b, c-f, or A): \nResult: \ns\n",
+	.exitcode = 0,
+},
+
+{
+	.file = "if.w",
+	.in = "A",
+	.out = "Please enter an option (a, b, c-f, or A): \nResult: \ns\n",
+	.exitcode = 0,
+},
+
+{
+	.file = "if.w",
+	.in = "g",
+	.out = "Please enter an option (a, b, c-f, or A): \nResult: \nm\n",
+},
+
+{
+	.file = "if.w",
+	.in = "h",
+	.out = "Please enter an option (a, b, c-f, or A): \nInvalid Option\n",
+	.exitcode = 1,
+},
+
+{
+	.file = "if.w",
+	.in = "i",
+	.out = "Please enter an option (a, b, c-f, or A): \nResult: \nm\n",
+},
+
+{
+	.file = "if.w",
+	.in = "j",
+	.out = "Please enter an option (a, b, c-f, or A): \nResult: \nm\n",
+},
+
+{
+	.file = "if.w",
+	.in = "k",
+	.out = "Please enter an option (a, b, c-f, or A): \nResult: \nl\n",
+},
+
+{
+	.file = "if.w",
+	.in = "l",
+	.out = "Please enter an option (a, b, c-f, or A): \nResult: \nz\n",
+},
+
+{
+	.file = "if.w",
+	.in = "B",
+	.out = "Please enter an option (a, b, c-f, or A): \nInvalid Option\n",
+	.exitcode = 1,
+},
+

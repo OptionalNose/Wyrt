@@ -75,7 +75,7 @@ RET:
 void *dynarr_pop(DynArr *da)
 {
 	void *top = dynarr_from_back(da, 0);
-	da->count--;
+	if(da->count) da->count--;
 	return top;
 }
 

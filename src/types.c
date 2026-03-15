@@ -26,6 +26,8 @@ void types_init(TypeContext *tc, Error *err)
 	if(*err) goto RET;
 	types_register(tc, (Type) {.type = TYPE_PRIMITIVE_S64}, err);
 	if(*err) goto RET;
+	types_register(tc, (Type) {.type = TYPE_PRIMITIVE_BOOL}, err);
+	if(*err) goto RET;
 RET:
 	return;
 }
@@ -116,6 +118,9 @@ Type type_from_ast(TypeContext *tc, AstNode const *nodes, size_t i, Error *err)
 			break;
 		case 8:
 			t = (Type) { .type = TYPE_PRIMITIVE_VOID };
+			break;
+		case 9:
+			t = (Type) { .type = TYPE_PRIMITIVE_BOOL };
 			break;
 		default: {
 			size_t index = SIZE_MAX;
@@ -274,6 +279,7 @@ bool types_are_equal(Type a, Type b)
 	case TYPE_PRIMITIVE_S32:
 	case TYPE_PRIMITIVE_S64:
 	case TYPE_PRIMITIVE_VOID:
+	case TYPE_PRIMITIVE_BOOL:
 		return true;
 	case TYPE_POINTER_CONST:
 	case TYPE_POINTER_ABYSS:
@@ -327,11 +333,15 @@ bool types_are_compatible(TypeContext const *tc, Type a, Type b)
 			return true;
 		else if(b.type >= TYPE_PRIMITIVE_S16 && b.type <= TYPE_PRIMITIVE_S64)
 			return true;
+		else if(b.type == TYPE_PRIMITIVE_BOOL)
+			return true;
 		else return false;
 	case TYPE_PRIMITIVE_U16:
 		if(b.type >= TYPE_PRIMITIVE_U16 && b.type <= TYPE_PRIMITIVE_U64)
 			return true;
 		else if(b.type >= TYPE_PRIMITIVE_S32 && b.type <= TYPE_PRIMITIVE_S64)
+			return true;
+		else if(b.type == TYPE_PRIMITIVE_BOOL)
 			return true;
 		else return false;
 	case TYPE_PRIMITIVE_U32:
@@ -339,32 +349,60 @@ bool types_are_compatible(TypeContext const *tc, Type a, Type b)
 			return true;
 		else if(b.type == TYPE_PRIMITIVE_S64)
 			return true;
+		else if(b.type == TYPE_PRIMITIVE_BOOL)
+			return true;
 		else return false;
 	case TYPE_PRIMITIVE_U64:
 		if(b.type == TYPE_PRIMITIVE_U64) return true;
+		else if(b.type == TYPE_PRIMITIVE_BOOL)
+			return true;
 		else return false;
 	case TYPE_PRIMITIVE_S8:
 		if(b.type >= TYPE_PRIMITIVE_S8 && b.type <= TYPE_PRIMITIVE_S64)
+			return true;
+		else if(b.type == TYPE_PRIMITIVE_BOOL)
 			return true;
 		else return false;
 	case TYPE_PRIMITIVE_S16:
 		if(b.type >= TYPE_PRIMITIVE_S16 && b.type <= TYPE_PRIMITIVE_S64)
 			return true;
+		else if(b.type == TYPE_PRIMITIVE_BOOL)
+			return true;
 		else return false;
 	case TYPE_PRIMITIVE_S32:
 		if(b.type >= TYPE_PRIMITIVE_S32 && b.type <= TYPE_PRIMITIVE_S64)
+			return true;
+		else if(b.type == TYPE_PRIMITIVE_BOOL)
 			return true;
 		else return false;
 	case TYPE_PRIMITIVE_S64:
 		if(b.type == TYPE_PRIMITIVE_S64)
 			return true;
+		else if(b.type == TYPE_PRIMITIVE_BOOL)
+			return true;
+		else return false;
+	case TYPE_PRIMITIVE_BOOL:
+		if(b.type == TYPE_PRIMITIVE_BOOL)
+			return true;
 		else return false;
 	case TYPE_POINTER_CONST:
-		if(b.type == TYPE_SLICE_CONST) return true;
+		if(b.type == TYPE_SLICE_CONST) {
+			if(tc->types[a.pointer.base].type == TYPE_ARRAY) {
+				return tc->types[a.pointer.base].array.base == b.slice.base;
+			} else {
+				return a.pointer.base == b.slice.base;
+			}
+		}
 		return types_are_equal(a, b);
 		break;
 	case TYPE_POINTER_ABYSS:
-		if(b.type == TYPE_SLICE_ABYSS) return true;
+		if(b.type == TYPE_SLICE_ABYSS) {
+			if(tc->types[a.pointer.base].type == TYPE_ARRAY) {
+				return tc->types[a.pointer.base].array.base == b.slice.base;
+			} else {
+				return a.pointer.base == b.slice.base;
+			}
+		}
 		return types_are_equal(a, b);
 		break;
 	case TYPE_SLICE_CONST:
@@ -440,6 +478,9 @@ void type_print(FILE *file, TypeContext const *tc, Type t, char *const *identifi
 	case TYPE_PRIMITIVE_VOID:
 		fprintf(file, "void");
 		break;
+	case TYPE_PRIMITIVE_BOOL:
+		fprintf(file, "bool");
+		break;
 	case TYPE_POINTER_CONST:
 		fprintf(file, "&const ");
 		type_print(file, tc, tc->types[t.pointer.base], identifiers);
@@ -493,6 +534,11 @@ bool type_is_arithmetic(Type t)
 	case TYPE_PRIMITIVE_U16:
 	case TYPE_PRIMITIVE_U32:
 	case TYPE_PRIMITIVE_U64:
+	case TYPE_PRIMITIVE_S8:
+	case TYPE_PRIMITIVE_S16:
+	case TYPE_PRIMITIVE_S32:
+	case TYPE_PRIMITIVE_S64:
+	case TYPE_PRIMITIVE_BOOL:
 		return true;
 	default:
 		return false;

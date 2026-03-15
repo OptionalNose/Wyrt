@@ -1,5 +1,6 @@
 #include "lexer.h"
 #include "util.h"
+#include "ui.h"
 
 #include <ctype.h>
 #include <string.h>
@@ -109,6 +110,43 @@ static void backup(
 	}
 }
 
+static int lex_char(
+	Lexer *lex,
+	size_t *pos,
+	uint32_t *line,
+	uint32_t *col,
+	uint32_t *prev_col,
+	Error *err
+)
+{
+	int c = get_char(lex, pos, line, col, prev_col);
+
+	if(c == '\\') {
+		c = get_char(lex, pos, line, col, prev_col);
+		switch(c) {
+		case 'n':
+			c = '\n';
+			break;
+		default:
+			fprintf(
+				stderr,
+				"Illegal Escape Sequence '\\%c' at ",
+				c
+			);
+			lexer_print_debug_to_file(
+				stderr,
+				&(DebugInfo) {lex->file_path, *line, *col}
+			);
+			fprintf(stderr, "\n");
+			*err = ERROR_UNEXPECTED_DATA;
+			goto RET;
+		}
+	}
+
+RET:
+	return c;
+}
+
 static Token lex_string(
 	Lexer *lex,
 	DynArr *strings,
@@ -130,37 +168,15 @@ static Token lex_string(
 			}
 		}
 	};
-	int c;
 
-	while((
-		c = get_char(lex, pos, line, col, prev_col)
-		) != '"'
-		&& c != EOF
-	) {
-		if(c == '\\') {
-			c = get_char(lex, pos, line, col, prev_col);
-			switch(c) {
-			case 'n':
-				c = '\n';
-				break;
-			default:
-				fprintf(
-					stderr,
-					"Illegal Escape Sequence '\\%c' at ",
-					c
-				);
-				lexer_print_debug_to_file(
-					stderr,
-					&tok.debug.debug_info
-				);
-				fprintf(stderr, "\n");
-				*err = ERROR_UNEXPECTED_DATA;
-				goto RET;
-			}
-		}
+	int c = lex_char(lex, pos, line, col, prev_col, err);
+	if(*err) goto RET;
 
+	while(c != '"' && c != EOF) {
 		dynarr_push(string_builder, &c, err);
 		if(*err) goto RET;
+		c = lex_char(lex, pos, line, col, prev_col, err);
+	   	if(*err) goto RET;
 	}
 	dynarr_push(string_builder, &(char){'\0'}, err);
 	if(*err) goto RET;
@@ -222,7 +238,8 @@ void lexer_tokenize(
 		"s32",
 		"u64",
 		"s64",
-		"void"
+		"void",
+		"bool",
 	};
 	const int primitive_type_count = (sizeof primitive_types) / (sizeof primitive_types[0]);
 
@@ -257,6 +274,15 @@ void lexer_tokenize(
 		if(*err) goto RET;
 
 		switch(*(char *)dynarr_at(&string_builder, 0)) {
+		case '!':
+			c = get_char(lex, &pos, &line, &col, &prev_col);
+			if(c == '=') {
+				tok.type = TOKEN_COMP_NE;
+				goto NEXT_TOK;
+			}
+			backup(lex, &pos, &line, &col, prev_col);
+			tok.type = TOKEN_LOGIC_NOT;
+			goto NEXT_TOK;
 		case ':':
 			tok.type = TOKEN_COLON;
 			goto NEXT_TOK;
@@ -266,8 +292,41 @@ void lexer_tokenize(
 		case ')':
 			tok.type = TOKEN_RPAREN;
 			goto NEXT_TOK;
+		case '>':
+			c = get_char(lex, &pos, &line, &col, &prev_col);
+			if(c == '=') {
+				tok.type = TOKEN_COMP_GE;
+				goto NEXT_TOK;
+			}
+			backup(lex, &pos, &line, &col, prev_col);
+			tok.type = TOKEN_COMP_GT;
+			goto NEXT_TOK;
+		case '<':
+			c = get_char(lex, &pos, &line, &col, &prev_col);
+			if(c == '=') {
+				tok.type = TOKEN_COMP_LE;
+				goto NEXT_TOK;
+			}
+			backup(lex, &pos, &line, &col, prev_col);
+			tok.type = TOKEN_COMP_LT;
+			goto NEXT_TOK;
 		case '=':
+			c = get_char(lex, &pos, &line, &col, &prev_col);
+			if(c == '=') {
+				tok.type = TOKEN_COMP_EQ;
+				goto NEXT_TOK;
+			}
+			backup(lex, &pos, &line, &col, prev_col);
 			tok.type = TOKEN_ASSIGN;
+			goto NEXT_TOK;
+		case '|':
+			c = get_char(lex, &pos, &line, &col, &prev_col);
+			if(c == '|') {
+				tok.type = TOKEN_LOGIC_OR;
+				goto NEXT_TOK;
+			}
+			backup(lex, &pos, &line, &col, prev_col);
+			tok.type = TOKEN_BIT_OR;
 			goto NEXT_TOK;
 		case '{':
 			tok.type = TOKEN_LCURLY;
@@ -321,6 +380,12 @@ void lexer_tokenize(
 			tok.type = TOKEN_COMMA;
 			goto NEXT_TOK;
 		case '&':
+			c = get_char(lex, &pos, &line, &col, &prev_col);
+			if(c == '&') {
+				tok.type = TOKEN_LOGIC_AND;
+				goto NEXT_TOK;
+			}
+			backup(lex, &pos, &line, &col, prev_col);
 			tok.type = TOKEN_AMPERSAND;
 			goto NEXT_TOK;
 		case '[':
@@ -384,6 +449,20 @@ void lexer_tokenize(
 				err
 			);
 			if(*err) goto RET;
+			goto NEXT_TOK;
+		case '\'':
+			tok.type = TOKEN_CHAR_LIT;
+			tok.char_lit.val = lex_char(lex, &pos, &line, &col, &prev_col, err);
+			if(*err) goto RET;
+			if((c = get_char(lex, &pos, &line, &col, &prev_col)) != '\'') {
+				wyrt_diag(
+					stderr, NULL, NULL, NULL,
+					"Expected single-quote to end char literal at %l\n",
+					&tok.debug.debug_info
+				);
+				*err = ERROR_UNEXPECTED_DATA;
+				goto RET;
+			}
 			goto NEXT_TOK;
 		default:
 			break;
@@ -456,6 +535,12 @@ void lexer_tokenize(
 				goto NEXT_TOK;
 			} else if(strcmp(string_builder.data, "typedef") == 0) {
 				tok.type = TOKEN_TYPEDEF;
+				goto NEXT_TOK;
+			} else if(strcmp(string_builder.data, "if") == 0) {
+				tok.type = TOKEN_IF;
+				goto NEXT_TOK;
+			} else if(strcmp(string_builder.data, "else") == 0) {
+				tok.type = TOKEN_ELSE;
 				goto NEXT_TOK;
 			}
 
@@ -619,6 +704,9 @@ void lexer_print_token_to_file(
 	case TOKEN_INT_LIT:
 		fprintf(file, "Int '%ji'", tok->int_lit.val);
 		break;
+	case TOKEN_CHAR_LIT:
+		fprintf(file, "Char '%c'", tok->char_lit.val);
+		break;
 	case TOKEN_STRING_LIT:
 		fprintf(
 			file,
@@ -684,6 +772,42 @@ void lexer_print_token_to_file(
 		break;
 	case TOKEN_ARROW:
 		fprintf(file, "'->'");
+		break;
+	case TOKEN_COMP_EQ:
+		fprintf(file, "'=='");
+		break;
+	case TOKEN_COMP_GE:
+		fprintf(file, "'>='");
+		break;
+	case TOKEN_COMP_LE:
+		fprintf(file, "'<='");
+		break;
+	case TOKEN_COMP_NE:
+		fprintf(file, "'!='");
+		break;
+	case TOKEN_COMP_GT:
+		fprintf(file, "'>'");
+		break;
+	case TOKEN_COMP_LT:
+		fprintf(file, "'<");
+		break;
+	case TOKEN_LOGIC_AND:
+		fprintf(file, "'&&'");
+		break;
+	case TOKEN_LOGIC_OR:
+		fprintf(file, "'||'");
+		break;
+	case TOKEN_LOGIC_NOT:
+		fprintf(file, "'!'");
+		break;
+	case TOKEN_IF:
+		fprintf(file, "if");
+		break;
+	case TOKEN_ELSE:
+		fprintf(file, "else");
+		break;
+	case TOKEN_BIT_OR:
+		fprintf(file, "'|'");
 		break;
 	}
 

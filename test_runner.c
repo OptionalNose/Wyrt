@@ -7,7 +7,9 @@ typedef struct {
 	const char *file;
 	int exitcode;
 	bool should_fail;
+	const char *in;
 	const char *out;
+	int num;
 } Test;
 
 const Test tests[] = {
@@ -31,8 +33,13 @@ const int test_count = (sizeof tests) / (sizeof tests[0]);
 int main(void)
 {
 	remove("err");
+
 	for(int i = 0; i < test_count; i++) {
-		printf("Test '%s': ", tests[i].file);
+		if(tests[i].in) {
+			printf("Test '%s' ('%s'): ", tests[i].file, tests[i].in);
+		} else {
+			printf("Test '%s': ", tests[i].file);
+		}
 #ifdef _WIN32
 		char *cmd = malloc(strlen(COMPILER) + strlen(tests[i].file) + strlen("test/ 2> err\"") + 1);
 #else
@@ -40,6 +47,7 @@ int main(void)
 #endif
 		FILE *file = NULL;
 		FILE *err = NULL;
+		FILE *in = NULL;
 		FILE *out = NULL;
 		cmd[0] = 0;
 		strcat(cmd, COMPILER "test/");
@@ -63,7 +71,21 @@ int main(void)
 			goto CLEAN_AFTER;
 		}
 
-		int exitcode = system(EXE " > out");
+		int exitcode;
+		if(tests[i].in) {
+			in = fopen("in", "w");
+			if(!in) {
+				fprintf(stderr, "Could not open file to use as stdin!\n");
+				return -1;
+			}
+
+			fwrite(tests[i].in, strlen(tests[i].in), 1, in);
+			fclose(in);
+
+			exitcode = system(EXE " > out < in");
+		} else {
+			exitcode = system(EXE " > out");
+		}
 #ifndef _WIN32
 		exitcode /= 256; // Needed on Linux for some reason (probably endian?)
 #endif

@@ -11,11 +11,23 @@ typedef enum {
 	AST_BLOCK,
 	AST_RET,
 	AST_INT_LIT,
+	AST_CHAR_LIT,
 
 	AST_MUL,
 	AST_DIV,
 	AST_ADD,
 	AST_SUB,
+
+	AST_COMP_EQ,
+	AST_COMP_GE,
+	AST_COMP_LE,
+	AST_COMP_NE,
+	AST_COMP_GT,
+	AST_COMP_LT,
+
+	AST_LOGIC_AND,
+	AST_LOGIC_OR,
+	AST_LOGIC_NOT,
 
 	AST_VAR_DECL,
 
@@ -54,7 +66,9 @@ typedef enum {
 	AST_DISCARD,
 
 	AST_TYPEDEF,
-	AST_ARROW
+	AST_ARROW,
+	
+	AST_IF
 } AstNodeType;
 
 typedef union {
@@ -147,20 +161,14 @@ typedef union {
 	struct {
 		AstNodeType type;
 		DebugInfo debug_info;
-		size_t base;
-	} addr;
+		size_t val;
+	} unary_op;
 
 	struct {
 		AstNodeType type;
 		DebugInfo debug_info;
 		size_t base_type;
 	} pointer_type;
-
-	struct {
-		AstNodeType type;
-		DebugInfo debug_info;
-		size_t ptr;
-	} deref;
 
 	struct {
 		AstNodeType type;
@@ -243,6 +251,21 @@ typedef union {
 		size_t id;
 		size_t backing;
 	} typdef;
+
+	struct {
+		AstNodeType type;
+		DebugInfo debug_info;
+		char val;
+	} char_lit;
+
+	struct {
+		AstNodeType type;
+		DebugInfo debug_info;
+		size_t decl; // 0 == None
+		size_t condition;
+		size_t block;
+		size_t else_block;
+	} if_statement;
 } AstNode;
 
 typedef struct {
@@ -269,11 +292,16 @@ void nodelist_clean(NodeList *list);
 	X(BLOCK) \
 	X(BLOCK_LIST) \
 	X(EXPR) \
+	X(VAR_DECL) \
 	X(VAR_DECL_INIT) \
 	X(ASSIGNMENT) \
 	X(STRUCT_TYPE) \
 	X(EXTERN) \
-	X(SEMICOLON)
+	X(SEMICOLON) \
+	X(IF) \
+	X(CONDITION) \
+	X(ELSE) \
+	X(RPAREN)
 
 typedef enum {
 #define X(n) PARSE_STATE_ ##n,

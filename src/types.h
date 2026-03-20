@@ -19,6 +19,10 @@ typedef enum {
 	TYPE_POINTER_ABYSS,
 	TYPE_POINTER_VAR,
 
+	TYPE_PAUL_CONST,
+	TYPE_PAUL_ABYSS,
+	TYPE_PAUL_VAR,
+
 	TYPE_ARRAY,
 	TYPE_SLICE_CONST,
 	TYPE_SLICE_ABYSS,
@@ -39,7 +43,7 @@ typedef union {
 	struct {
 		TypeType type;
 		size_t base;
-		size_t len;
+		size_t len; // 0 == Unknown Length (used in PAUL)
 	} array;
 
 	struct {

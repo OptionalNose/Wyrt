@@ -240,6 +240,8 @@ void lexer_tokenize(
 		"s64",
 		"void",
 		"bool",
+		"ptr",
+		"len",
 	};
 	const int primitive_type_count = (sizeof primitive_types) / (sizeof primitive_types[0]);
 

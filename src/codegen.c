@@ -351,7 +351,22 @@ static WyrtRvalue gen_cast(
 		}
 		new = expr.expr;
 		break;
-
+	case TYPE_PAUL_CONST:
+	case TYPE_PAUL_ABYSS:
+	case TYPE_PAUL_VAR:
+		if(!types_are_compatible(tc, expr.type, type)) {
+			wyrt_diag(
+				stderr, cg->identifiers, cg->strings, tc,
+				"Cannot cast Pointer to Array of Unknown Length '%t' to pointer of type '%t' at %l\n",
+				expr.type,
+				type,
+				loc
+			);
+			*err = ERROR_UNEXPECTED_DATA;
+			goto RET;
+		}
+		new = expr.expr;
+		break;
 	default:
 		wyrt_diag(
 			stderr, cg->identifiers, cg->strings, tc,
@@ -444,6 +459,14 @@ static Expr gen_expr(CodeGen *cg, Type expected, size_t index, Scope *scope, Err
 			|| expr.type == AST_COMP_LE
 			|| expr.type == AST_COMP_NE
 			|| expr.type == AST_COMP_GT
+			|| (
+				expected.type == TYPE_PAUL_CONST
+				|| expected.type == TYPE_PAUL_ABYSS
+				|| expected.type == TYPE_PAUL_VAR	
+				|| expected.type == TYPE_POINTER_CONST
+				|| expected.type == TYPE_POINTER_ABYSS
+				|| expected.type == TYPE_POINTER_VAR
+			)
 		) {
 			lhs = gen_expr(cg, (Type) {.type = TYPE_NONE}, expr.binop.lhs, scope, err);
 			if(*err) goto RET;
@@ -461,16 +484,24 @@ static Expr gen_expr(CodeGen *cg, Type expected, size_t index, Scope *scope, Err
 		bool rhs_compatible = types_are_compatible(&scope->tc, rhs.type, lhs.type);
 		bool lhs_compatible = types_are_compatible(&scope->tc, lhs.type, rhs.type);
 
-		if(!lhs_compatible && !rhs_compatible) {
-			wyrt_diag(
-				stderr, cg->identifiers, cg->strings, &scope->tc,
-				"Cannot Perform Arithmetic on Incompatible Types '%t' and '%t' at %l\n",
-				lhs.type,
-				rhs.type,
-				&expr.debug.debug_info
-			);
-			*err = ERROR_UNEXPECTED_DATA;
-			goto RET;
+		if(expected.type != TYPE_PAUL_CONST
+			&& expected.type != TYPE_PAUL_ABYSS
+			&& expected.type != TYPE_PAUL_VAR
+			&& expected.type != TYPE_POINTER_CONST
+			&& expected.type != TYPE_POINTER_ABYSS
+			&& expected.type != TYPE_POINTER_VAR
+		) {
+			if(!lhs_compatible && !rhs_compatible) {
+				wyrt_diag(
+					stderr, cg->identifiers, cg->strings, &scope->tc,
+					"Cannot Perform Arithmetic on Incompatible Types '%t' and '%t' at %l\n",
+					lhs.type,
+					rhs.type,
+					&expr.debug.debug_info
+				);
+				*err = ERROR_UNEXPECTED_DATA;
+				goto RET;
+			}
 		}
 
 		if(!type_is_arithmetic(lhs.type)) {
@@ -509,6 +540,115 @@ static Expr gen_expr(CodeGen *cg, Type expected, size_t index, Scope *scope, Err
 			}
 			rhs.expr = cg->be.new_cast(cg->ctx, &expr.debug.debug_info, rhs.expr, lhs.type, &scope->tc, err);
 			if(*err) goto RET;
+
+			ret.expr = cg->be.rvalue_binary_op(
+				cg->ctx,
+				&expr.debug.debug_info,
+				expr.type,
+				ret.type,
+				&scope->tc,
+				lhs.expr,
+				rhs.expr,
+				err
+			);
+			if(*err) goto RET;
+		} else if(expected.type == TYPE_PAUL_CONST
+			|| expected.type == TYPE_PAUL_ABYSS
+			|| expected.type == TYPE_PAUL_VAR
+			|| expected.type == TYPE_POINTER_CONST
+			|| expected.type == TYPE_POINTER_ABYSS
+			|| expected.type == TYPE_POINTER_VAR
+		) {	
+			
+			WyrtRvalue ptr;
+			WyrtRvalue offset;
+			Type sign;
+			if(lhs.type.type == TYPE_PAUL_CONST
+				|| lhs.type.type == TYPE_PAUL_ABYSS
+				|| lhs.type.type == TYPE_PAUL_VAR
+			) {
+				if(rhs.type.type < TYPE_PRIMITIVE_U8 || rhs.type.type > TYPE_PRIMITIVE_S64) {
+					wyrt_diag(
+						stderr, cg->identifiers, cg->strings, &scope->tc,
+						"Cannot add two pointers '%t' and '%t' together at %l\n",
+						lhs.type,
+						rhs.type,
+						&expr.debug.debug_info
+					);
+					*err = ERROR_UNEXPECTED_DATA;
+					goto RET;
+				}
+
+				ptr = lhs.expr;
+				ret.type = lhs.type;
+				offset = rhs.expr;
+				if(rhs.type.type >= TYPE_PRIMITIVE_U8 && rhs.type.type <= TYPE_PRIMITIVE_U64) {
+					sign = rhs.type;
+					sign.type += TYPE_PRIMITIVE_S8 - TYPE_PRIMITIVE_U8;
+					offset = cg->be.new_cast(cg->ctx, &expr.debug.debug_info, offset, sign, &scope->tc, err);
+					if(*err) goto RET;
+				}
+			} else if(rhs.type.type == TYPE_PAUL_CONST
+				|| rhs.type.type == TYPE_PAUL_ABYSS
+				|| rhs.type.type == TYPE_PAUL_VAR
+			) {
+				ptr = rhs.expr;
+				ret.type = rhs.type;
+				offset = lhs.expr;	
+				if(lhs.type.type >= TYPE_PRIMITIVE_U8 && lhs.type.type <= TYPE_PRIMITIVE_U64) {
+					sign = lhs.type;
+					sign.type += TYPE_PRIMITIVE_S8 - TYPE_PRIMITIVE_U8;
+					offset = cg->be.new_cast(cg->ctx, &expr.debug.debug_info, offset, sign, &scope->tc, err);
+					if(*err) goto RET;
+				}
+			} else {
+				wyrt_diag(
+					stderr, cg->identifiers, cg->strings, &scope->tc,
+					"Cannot get pointer from arithmetic between non-pointer types '%t' and '%t' at %l\n",
+					lhs.type,
+					rhs.type,
+					&expr.debug.debug_info
+				);
+				*err = ERROR_UNEXPECTED_DATA;
+				goto RET;
+			}
+
+			switch(expr.type) {
+			case AST_ADD:
+				break;
+			case AST_SUB: {
+				WyrtRvalue neg = cg->be.rvalue_int_lit(cg->ctx, -1, sign.type, err);
+				if(*err) goto RET;
+
+				offset = cg->be.rvalue_binary_op(
+					cg->ctx,
+					&expr.debug.debug_info,
+					AST_MUL,
+					sign,
+					&scope->tc,
+					offset,
+					neg,
+					err
+				);
+				if(*err) goto RET;
+			} break;
+			default:
+				wyrt_diag(
+					stderr, cg->identifiers, cg->strings, &scope->tc,
+					"Illegal operation between pointer type '%t' and integer type '%t' at %l\n",
+					lhs.type,
+					rhs.type,
+					&expr.debug.debug_info
+				);
+				*err = ERROR_UNEXPECTED_DATA;
+				goto RET;
+			}
+
+			WyrtLvalue elem = cg->be.lvalue_subscript(cg->ctx, &expr.debug.debug_info, ptr, offset, err);
+			if(*err) goto RET;
+
+			ret.expr = cg->be.rvalue_address(cg->ctx, &expr.debug.debug_info, elem, err);
+			if(*err) goto RET;
 		} else {
 			if(expr.type == AST_COMP_EQ
 				|| expr.type == AST_COMP_GE
@@ -523,18 +663,20 @@ static Expr gen_expr(CodeGen *cg, Type expected, size_t index, Scope *scope, Err
 			}
 			lhs.expr = cg->be.new_cast(cg->ctx, &expr.debug.debug_info, lhs.expr, rhs.type, &scope->tc, err);
 			if(*err) goto RET;
+
+			ret.expr = cg->be.rvalue_binary_op(
+				cg->ctx,
+				&expr.debug.debug_info,
+				expr.type,
+				ret.type,
+				&scope->tc,
+				lhs.expr,
+				rhs.expr,
+				err
+			);
+			if(*err) goto RET;
 		}
 
-		ret.expr = cg->be.rvalue_binary_op(
-			cg->ctx,
-			&expr.debug.debug_info,
-			expr.type,
-			ret.type.type,
-			lhs.expr,
-			rhs.expr,
-			err
-		);
-		if(*err) goto RET;
 	} break;
 
 	case AST_LOGIC_NOT: {
@@ -851,52 +993,95 @@ ARRAY_LIT_CLEAN:
 			err
 		);
 		if(*err) goto RET;
-		if(parent.type.type != TYPE_STRUCT) {
-			wyrt_diag(
-				stderr, cg->identifiers, cg->strings, &scope->tc,
-				"Cannot Access Member of non-struct Type '%t' at %l\n",
-				parent,
-				&expr.debug.debug_info
-			);
-			*err = ERROR_UNEXPECTED_DATA;
-			goto RET;
-		}
-
 
 		ret.expr = NULL;
-		for(size_t i = 0; i < parent.type.struct_type.member_count; i++) {
-			if(parent.type.struct_type.member_name_ids[i] == expr.struct_access.member_id) {
+		switch(parent.type.type) {
+		case TYPE_STRUCT:
+			for(size_t i = 0; i < parent.type.struct_type.member_count; i++) {
+				if(parent.type.struct_type.member_name_ids[i] == expr.struct_access.member_id) {
+					ret.expr = cg->be.rvalue_field(
+						cg->ctx,
+						&expr.debug.debug_info,
+						parent.expr,
+						parent.type,
+						&scope->tc,
+						i,
+						err
+					);
+					if(*err) goto RET;
+					ret.type = scope->tc.types[parent.type.struct_type.member_types[i]];
+				}
+			}
+
+			if(!ret.expr) {
+				wyrt_diag(
+					stderr, cg->identifiers, cg->strings, &scope->tc,
+					"No Members '%i' in struct '%t' at %l\n",
+					expr.struct_access.member_id,
+					parent.type,
+					&expr.debug.debug_info
+				);
+				*err = ERROR_UNEXPECTED_DATA;
+				goto RET;
+			}
+			break;
+
+		case TYPE_SLICE_CONST:
+		case TYPE_SLICE_ABYSS:
+		case TYPE_SLICE_VAR:
+			if(expr.struct_access.member_id == 10) {
 				ret.expr = cg->be.rvalue_field(
 					cg->ctx,
 					&expr.debug.debug_info,
 					parent.expr,
 					parent.type,
 					&scope->tc,
-					i,
+					0,
 					err
 				);
 				if(*err) goto RET;
-				ret.type = scope->tc.types[parent.type.struct_type.member_types[i]];
+				ret.type = parent.type;
+				ret.type.type += TYPE_PAUL_CONST - TYPE_SLICE_CONST;
+			} else if(expr.struct_access.member_id == 11) {
+				ret.expr = cg->be.rvalue_field(
+					cg->ctx,
+					&expr.debug.debug_info,
+					parent.expr,
+					parent.type,
+					&scope->tc,
+					0,
+					err
+				);
+				if(*err) goto RET;
+				ret.type.type = TYPE_PRIMITIVE_U64;
+			} else {
+				wyrt_diag(
+					stderr, cg->identifiers, cg->strings, &scope->tc,
+					"No Member '%i' in slice at %l\n",
+					expr.struct_access.member_id,
+					&expr.debug.debug_info
+				);
+				*err = ERROR_UNEXPECTED_DATA;
+				goto RET;
 			}
-		}
+			break;
 
-		if(!ret.expr) {
+		default:
 			wyrt_diag(
 				stderr, cg->identifiers, cg->strings, &scope->tc,
-				"No Members '%i' in struct '%t' at %l\n",
-				expr.struct_access.member_id,
+				"Cannot Access Member of non-struct and non-slice Type %t at %l\n",
 				parent.type,
 				&expr.debug.debug_info
 			);
 			*err = ERROR_UNEXPECTED_DATA;
 			goto RET;
 		}
+
 	} break;
 
 	case AST_STRING_LIT:
 	case AST_ZSTRING_LIT: {
-		ret.type = types_get_ptr(&scope->tc, (Type) {.type = TYPE_PRIMITIVE_U8}, TYPE_POINTER_CONST);
-		ret.type.type = TYPE_SLICE_CONST;
+		ret.type = types_get_ptr(&scope->tc, (Type) {.type = TYPE_PRIMITIVE_U8}, TYPE_SLICE_CONST);
 
 		WyrtRvalue vals[2];
 		vals[0] = cg->be.rvalue_cstring_lit(
@@ -928,7 +1113,7 @@ ARRAY_LIT_CLEAN:
 	} break;
 
 	case AST_CSTRING_LIT: {
-		ret.type = types_get_ptr(&scope->tc, (Type) {.type = TYPE_PRIMITIVE_U8}, TYPE_POINTER_CONST);
+		ret.type = types_get_ptr(&scope->tc, (Type) {.type = TYPE_PRIMITIVE_U8}, TYPE_PAUL_CONST);
 
 		ret.expr = cg->be.rvalue_cstring_lit(
 			cg->ctx,

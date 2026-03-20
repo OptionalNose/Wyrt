@@ -77,4 +77,8 @@
 	.exitcode = 16,
 },
 
-
+{
+	.file = "ptrarith.w",
+	.out = "Hello, World!\n",
+	.exitcode = 9,
+},

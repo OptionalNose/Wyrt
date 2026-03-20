@@ -1,4 +1,4 @@
-fn cputs(s: &const u8) s32
+fn cputs(s: &const [_]u8) s32
 #extern("puts")
 
 fn main() u8

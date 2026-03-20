@@ -1,7 +1,7 @@
 fn read() s32
 #extern("getchar")
 
-fn print(s: &const u8) s32
+fn print(s: &const [_]u8) s32
 #extern("puts")
 
 fn putc(c: u8) s32

@@ -72,7 +72,8 @@ typedef struct {
 		WyrtContext,
 		const DebugInfo*,
 		AstNodeType,
-		TypeType,
+		Type,
+		TypeContext const *,
 		WyrtRvalue,
 		WyrtRvalue,
 		Error*

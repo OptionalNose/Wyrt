@@ -173,6 +173,13 @@ Type type_from_ast(TypeContext *tc, AstNode const *nodes, size_t i, Error *err)
 				.base = index,
 			},
 		};
+
+		if(targ_type.type == TYPE_ARRAY) {
+			if(!targ_type.array.len) {
+				t.pointer.base = targ_type.array.base;
+				t.pointer.type += TYPE_PAUL_CONST - TYPE_POINTER_CONST;
+			}
+		}
 		break;
 
 	case AST_ARRAY:
@@ -284,6 +291,9 @@ bool types_are_equal(Type a, Type b)
 	case TYPE_POINTER_CONST:
 	case TYPE_POINTER_ABYSS:
 	case TYPE_POINTER_VAR:
+	case TYPE_PAUL_CONST:
+	case TYPE_PAUL_ABYSS:
+	case TYPE_PAUL_VAR:
 	case TYPE_SLICE_CONST:
 	case TYPE_SLICE_ABYSS:
 	case TYPE_SLICE_VAR:
@@ -421,6 +431,19 @@ bool types_are_compatible(TypeContext const *tc, Type a, Type b)
 		} else {
 			return false;
 		}
+	case TYPE_PAUL_CONST:
+	case TYPE_PAUL_ABYSS:
+		if(b.type == TYPE_POINTER_CONST - TYPE_PAUL_CONST + a.type) a.type = b.type;
+		return types_are_equal(a, b);
+	case TYPE_PAUL_VAR:
+		if((b.type >= TYPE_PAUL_CONST && b.type <= TYPE_PAUL_VAR)
+			|| (b.type >= TYPE_POINTER_CONST && b.type <= TYPE_POINTER_VAR)
+		) {
+			a.type = b.type;
+			return types_are_equal(a, b);
+		} else {
+			return false;
+		}
 	case TYPE_ARRAY:
 		if(b.type != TYPE_ARRAY) return false;
 		if(a.array.base != b.array.base) return false;
@@ -493,8 +516,24 @@ void type_print(FILE *file, TypeContext const *tc, Type t, char *const *identifi
 		fprintf(file, "&var ");
 		type_print(file, tc, tc->types[t.pointer.base], identifiers);
 		break;
+	case TYPE_PAUL_CONST:
+		fprintf(file, "&const [_]");
+		type_print(file, tc, tc->types[t.pointer.base], identifiers);
+		break;
+	case TYPE_PAUL_ABYSS:
+		fprintf(file, "&abyss [_]");
+		type_print(file, tc, tc->types[t.pointer.base], identifiers);
+		break;
+	case TYPE_PAUL_VAR:
+		fprintf(file, "&var [_]");
+		type_print(file, tc, tc->types[t.pointer.base], identifiers);
+		break;
 	case TYPE_ARRAY:
-		fprintf(file, "[%zi]", t.array.len);
+		if(t.array.len) {
+			fprintf(file, "[%zi]", t.array.len);
+		} else {
+			fprintf(file, "[0]");
+		}
 		type_print(file, tc, tc->types[t.array.base], identifiers);
 		break;
 	case TYPE_SLICE_CONST:
@@ -539,7 +578,11 @@ bool type_is_arithmetic(Type t)
 	case TYPE_PRIMITIVE_S32:
 	case TYPE_PRIMITIVE_S64:
 	case TYPE_PRIMITIVE_BOOL:
+	case TYPE_PAUL_CONST:
+	case TYPE_PAUL_ABYSS:
+	case TYPE_PAUL_VAR:
 		return true;
+	
 	default:
 		return false;
 	}
@@ -647,6 +690,10 @@ bool type_is_subscriptable(
 	case TYPE_POINTER_ABYSS:
 	case TYPE_POINTER_VAR:
 		return tc->types[t.pointer.base].type == TYPE_ARRAY;
+	case TYPE_PAUL_CONST:
+	case TYPE_PAUL_ABYSS:
+	case TYPE_PAUL_VAR:
+		return true;
 	default: return false;
 	}
 }

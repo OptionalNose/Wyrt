@@ -186,7 +186,10 @@ static gcc_jit_type *gen_type(
 
 	case TYPE_POINTER_CONST:
 	case TYPE_POINTER_ABYSS:
-	case TYPE_POINTER_VAR: {
+	case TYPE_POINTER_VAR:
+	case TYPE_PAUL_CONST:
+	case TYPE_PAUL_ABYSS:
+	case TYPE_PAUL_VAR: {
 		gcc_jit_type *base = gen_type(ctx, tc->types[type.pointer.base], tc, err);
 		if(*err) goto RET;
 
@@ -713,7 +716,8 @@ WyrtRvalue rvalue_binary_op(
 	WyrtContext vpctx,
 	const DebugInfo *debug,
 	AstNodeType op,
-	TypeType type,
+	Type type,
+	TypeContext const *tc,
 	WyrtRvalue vplhs,
 	WyrtRvalue vprhs,
 	Error *err
@@ -773,44 +777,8 @@ WyrtRvalue rvalue_binary_op(
 		assert(false);
 	}
 
-	gcc_jit_type *t;
-	switch(type) {
-	case TYPE_PRIMITIVE_U8:
-		t = gcc_jit_context_get_type(ctx, GCC_JIT_TYPE_UINT8_T);
-		break;
-	case TYPE_PRIMITIVE_U16:
-		t = gcc_jit_context_get_type(ctx, GCC_JIT_TYPE_UINT16_T);
-		break;
-	case TYPE_PRIMITIVE_U32:
-		t = gcc_jit_context_get_type(ctx, GCC_JIT_TYPE_UINT32_T);
-		break;
-	case TYPE_PRIMITIVE_U64:
-		t = gcc_jit_context_get_type(ctx, GCC_JIT_TYPE_UINT64_T);
-		break;
-	case TYPE_PRIMITIVE_S8:
-		t = gcc_jit_context_get_type(ctx, GCC_JIT_TYPE_INT8_T);
-		break;
-	case TYPE_PRIMITIVE_S16:
-		t = gcc_jit_context_get_type(ctx, GCC_JIT_TYPE_INT16_T);
-		break;
-	case TYPE_PRIMITIVE_S32:
-		t = gcc_jit_context_get_type(ctx, GCC_JIT_TYPE_INT32_T);
-		break;
-	case TYPE_PRIMITIVE_S64:
-		t = gcc_jit_context_get_type(ctx, GCC_JIT_TYPE_INT64_T);
-		break;
-	case TYPE_PRIMITIVE_BOOL:
-		t = gcc_jit_context_get_type(ctx, GCC_JIT_TYPE_BOOL);
-		break;
-	default:
-		assert(false);
-	}
-
-	if(!t) {
-		fprintf(stderr, "[BACKEND] Could not generate integer type!\n");
-		*err = ERROR_IO;
-		goto RET;
-	}
+	gcc_jit_type *t = gen_type(ctx, type, tc, err);
+	if(*err) goto RET;
 
 	res = gcc_jit_context_new_binary_op(ctx, loc, gcc_op, t, lhs, rhs);
 

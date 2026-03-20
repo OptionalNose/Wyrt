@@ -1,9 +1,9 @@
 typedef Args = struct {
 	x: u8,
-	str: &const u8,
+	str: &const [_]u8,
 };
 
-fn print(str: &const u8) s32
+fn print(str: &const [_]u8) s32
 #extern("puts")
 
 fn main() u8

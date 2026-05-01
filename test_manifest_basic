@@ -74,7 +74,17 @@
 {
 	.file = "typedef.w",
 	.out = "Hello, Typedef!\n",
-	.exitcode = 16,
+	.exitcode = 37,
+},
+
+{
+	.file = "failing_wrong_name.w",
+	.should_fail = true,
+},
+
+{
+	.file = "failing_duplicate_name.w",
+	.should_fail = true,
 },
 
 {

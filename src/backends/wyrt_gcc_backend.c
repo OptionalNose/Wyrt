@@ -462,11 +462,17 @@ WyrtRvalue rvalue_null(WyrtContext vpctx, Type type, TypeContext *tc, Error *err
 	case TYPE_PRIMITIVE_S8:
 	case TYPE_PRIMITIVE_S16:
 	case TYPE_PRIMITIVE_S32:
-	case TYPE_PRIMITIVE_S64:
+	case TYPE_PRIMITIVE_S64: {
+		rval = gcc_jit_context_zero(ctx, t);
+	} break;
+
 	case TYPE_POINTER_CONST:
 	case TYPE_POINTER_ABYSS:
-	case TYPE_POINTER_VAR: {
-		rval = gcc_jit_context_zero(ctx, t);
+	case TYPE_POINTER_VAR:
+	case TYPE_PAUL_CONST:
+	case TYPE_PAUL_ABYSS:
+	case TYPE_PAUL_VAR: {
+		rval = gcc_jit_context_null(ctx, t);
 	} break;
 
 	case TYPE_ARRAY: {

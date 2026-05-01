@@ -208,6 +208,7 @@ typedef union {
 	struct {
 		AstNodeType type;
 		DebugInfo debug_info;
+		size_t parent_id; // 0 == anonymous
 		size_t member_count;
 		size_t *member_name_ids;
 		size_t *member_values;

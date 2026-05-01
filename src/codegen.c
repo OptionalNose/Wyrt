@@ -268,7 +268,7 @@ static WyrtRvalue gen_cast(
 	Error *err
 )
 {
-	WyrtRvalue *new;
+	WyrtRvalue *new = NULL;
 
 	switch(expr.type.type) {
 	case TYPE_PRIMITIVE_U8:
@@ -388,6 +388,7 @@ static Expr gen_expr(CodeGen *cg, Type expected, size_t index, Scope *scope, Err
 	AstNode expr = cg->nodes[index];
 	Expr ret;
 
+	Type maybe_typedef = expected;
 	expected = type_resolve(&scope->tc, expected);
 
 	switch(expr.type) {
@@ -882,16 +883,6 @@ ARRAY_LIT_CLEAN:
 	} break;
 
 	case AST_STRUCT_LIT: {
-		if(!expected.type) {
-			wyrt_diag(
-				stderr, cg->identifiers, cg->strings, &scope->tc,
-				"Cannot Instantiate Anonymous struct Literal without any Destination Type at %l\n",
-				&expr.debug.debug_info
-			);
-			*err = ERROR_UNEXPECTED_DATA;
-			goto RET;
-		}
-
 		if(expected.type != TYPE_STRUCT) {
 			wyrt_diag(
 				stderr, cg->identifiers, cg->strings, &scope->tc,
@@ -902,18 +893,88 @@ ARRAY_LIT_CLEAN:
 			*err = ERROR_UNEXPECTED_DATA;
 			goto RET;
 		}
+		
+		if(!expr.struct_lit.parent_id) {
+			if(!expected.type) {
+				wyrt_diag(
+					stderr, cg->identifiers, cg->strings, &scope->tc,
+					"Cannot Instantiate Anonymous Struct Literal without any Destination Type "
+					"at %l\n",
+					&expr.debug.debug_info
+				);
+				*err = ERROR_UNEXPECTED_DATA;
+				goto RET;
+			}
 
-		if(expr.struct_lit.member_count > expected.struct_type.member_count) {
-			wyrt_diag(
-				stderr, cg->identifiers, cg->strings, &scope->tc,
-				"Cannot Coerce Struct-Literal with %zi members to struct Type '%t' with %zi members at %l\n",
-				expr.struct_lit.member_count,
-				expected,
-				expected.struct_type.member_count,
-				&expr.debug.debug_info
-			);
-			*err = ERROR_UNEXPECTED_DATA;
-			goto RET;
+
+			if(expr.struct_lit.member_count > expected.struct_type.member_count) {
+				wyrt_diag(
+					stderr, cg->identifiers, cg->strings, &scope->tc,
+					"Cannot Coerce Struct-Literal with %z members to struct Type '%t' "
+					"with %z members at %l\n",
+					expr.struct_lit.member_count,
+					expected,
+					expected.struct_type.member_count,
+					&expr.debug.debug_info
+				);
+				*err = ERROR_UNEXPECTED_DATA;
+				goto RET;
+			}
+		} else {
+			size_t named = type_lookup_id(&scope->tc, expr.struct_lit.parent_id);
+			if(named == SIZE_MAX) {
+				wyrt_diag(
+					stderr, cg->identifiers, cg->strings, &scope->tc,
+					"Could not find a type called '%i' at %l\n",
+					expr.struct_lit.parent_id,
+					&expr.debug.debug_info
+				);
+				*err = ERROR_UNEXPECTED_DATA;
+				goto RET;
+			}
+
+			if(scope->tc.types[named].type != TYPE_STRUCT) {
+				wyrt_diag(
+					stderr, cg->identifiers, cg->strings, &scope->tc,
+					"Cannot create Struct Literal of non-Struct Type '%t' at %l\n",
+					named,
+					&expr.debug.debug_info
+				);
+				*err = ERROR_UNEXPECTED_DATA;
+				goto RET;
+			}
+
+			if(maybe_typedef.type == TYPE_TYPEDEF) {
+				size_t name = maybe_typedef.typdef.id;
+				while(expr.struct_lit.parent_id != maybe_typedef.typdef.id) {
+					maybe_typedef = scope->tc.types[maybe_typedef.typdef.backing];
+					if(maybe_typedef.type != TYPE_TYPEDEF) break;
+				}	
+				if(maybe_typedef.type != TYPE_TYPEDEF) {
+					wyrt_diag(
+						stderr, cg->identifiers, cg->strings, &scope->tc,
+						"Cannot Coerce Named Struct Literal ('%i') into "
+						"different name ('%i') at %l\n",
+						expr.struct_lit.parent_id,
+						name,
+						&expr.debug.debug_info
+					);
+					*err = ERROR_UNEXPECTED_DATA;
+					goto RET;
+				}
+			}
+
+			if(!types_are_compatible(&scope->tc, maybe_typedef, scope->tc.types[named])) {
+				wyrt_diag(
+					stderr, cg->identifiers, cg->strings, &scope->tc,
+					"Struct Literal of type '%t' cannot be coerced into Struct Type '%t' at %l\n",
+					scope->tc.types[named],
+					maybe_typedef,
+					&expr.debug.debug_info
+				);
+				*err = ERROR_UNEXPECTED_DATA;
+				goto RET;
+			}
 		}
 
 		WyrtRvalue *members = malloc(sizeof(*members) * expected.struct_type.member_count);
@@ -1206,6 +1267,7 @@ RET:
 	if(!*err) {
 		types_register_nexist(&scope->tc, ret.type, err);
 		if(*err) goto RET_FAIL;
+		ret.type = type_resolve(&scope->tc, ret.type);
 		if(expected.type && !types_are_compatible(&scope->tc, ret.type, expected)) {
 			wyrt_diag(
 				stderr, cg->identifiers, cg->strings, &scope->tc,
@@ -1220,8 +1282,6 @@ RET:
 			ret.expr = gen_cast(cg, ret, expected, &scope->tc, &expr.debug.debug_info, err);
 			ret.type = expected;
 		}
-
-		ret.type = type_resolve(&scope->tc, ret.type);
 	}
 RET_FAIL:
 	return ret;
@@ -2299,7 +2359,12 @@ void codegen_gen(CodeGen *cg, GenOptions options, const char *path, Error *err)
 	for(size_t i = 0; i < module.module.statement_count; i++) {
 		size_t index = module.module.statements[i];
 		if(cg->nodes[index].type == AST_TYPEDEF) {
-			Type backing = type_from_ast(&global.tc, cg->nodes, cg->nodes[index].typdef.backing, err);
+			Type backing = type_from_ast(
+				&global.tc,
+				cg->nodes,
+				cg->nodes[index].typdef.backing,
+				err
+			);
 			if(*err) goto RET;
 
 			size_t type_index = SIZE_MAX;
@@ -2309,6 +2374,20 @@ void codegen_gen(CodeGen *cg, GenOptions options, const char *path, Error *err)
 					break;
 				}
 			}
+			for(size_t j = 0; j < global.tc.count; j++) {
+				if(global.tc.types[j].type == TYPE_TYPEDEF) {
+					if(global.tc.types[j].typdef.id == cg->nodes[index].typdef.id) {
+						wyrt_diag(
+							stderr, cg->identifiers, cg->strings, &global.tc,
+							"Cannot create Duplicate Typedef at %l\n",
+							&cg->nodes[index].debug.debug_info
+						);
+						*err = ERROR_UNEXPECTED_DATA;
+						goto RET;
+					}
+				}	
+			}
+
 			assert(type_index != SIZE_MAX);
 
 			Type t = (Type) {
@@ -2364,17 +2443,8 @@ void codegen_gen(CodeGen *cg, GenOptions options, const char *path, Error *err)
 			fnnum += 1;
 			break;
 
-		case AST_TYPEDEF: {
-			Type backing = type_from_ast(
-				&global.tc,
-				cg->nodes,
-				cg->nodes[index].typdef.backing,
-				err		
-			);
-			if(*err) goto RET;
-			types_register(&global.tc, backing, err);
-			if(*err ) goto RET;
-		} break;
+		case AST_TYPEDEF:
+			break;
 
 		default:
 			fprintf(stderr, "Illegal File-Scope Statement at ");

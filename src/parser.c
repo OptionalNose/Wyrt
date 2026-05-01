@@ -1616,6 +1616,7 @@ static void handle_EXPR(Parser *prs, size_t *index, Error *err)
 						.struct_lit = {
 							.type = AST_STRUCT_LIT,
 							.debug_info = op->debug,
+							.parent_id = op->id,
 							.member_count = (op->extra + 1) / 2,
 							.member_name_ids = malloc((1 + op->extra) / 2 * sizeof(size_t)),
 							.member_values = malloc((1 + op->extra) / 2* sizeof(size_t)),
@@ -1841,6 +1842,7 @@ static void handle_EXPR(Parser *prs, size_t *index, Error *err)
 					.type = EXPR_STRUCT_LIT,
 					.debug = prs->tokens[*index].debug.debug_info,
 					.extra = 0,
+					.id = 0,
 				},
 				err
 			);
@@ -1857,10 +1859,9 @@ static void handle_EXPR(Parser *prs, size_t *index, Error *err)
 				*err = ERROR_UNEXPECTED_DATA;
 				goto RET;
 			}
-
-			if(prs->tokens[*index + 1].type == TOKEN_LPAREN) {
+			switch(prs->tokens[*index + 1].type) {
+			case TOKEN_LPAREN:
 				*index += 1;
-
 				dynarr_push(
 					&op_stack,
 					&(ExprOp) {
@@ -1872,7 +1873,24 @@ static void handle_EXPR(Parser *prs, size_t *index, Error *err)
 					err
 				);
 				if(*err) goto RET;
-			} else {
+				break;
+
+			case TOKEN_LCURLY:
+				*index += 1;
+				dynarr_push(
+					&op_stack,
+					&(ExprOp) {
+						.type = EXPR_STRUCT_LIT,
+						.debug = prs->tokens[*index].debug.debug_info,
+						.extra = 0,
+						.id = prs->tokens[*index - 1].ident.id,
+					},
+					err
+				);
+				if(*err) goto RET;
+				break;
+
+			default:
 				nodelist_push(
 					&prs->ast,
 					(AstNode) {
@@ -1885,11 +1903,10 @@ static void handle_EXPR(Parser *prs, size_t *index, Error *err)
 					err
 				);
 				if(*err) goto RET;
-
 				dynarr_push(&free_list, &(size_t) {prs->ast.len - 1}, err);
 				if(*err) goto RET;
-
 				has_prev_op = false;
+				break;
 			}
 			*index += 1;
 			break;

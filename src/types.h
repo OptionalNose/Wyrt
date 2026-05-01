@@ -104,3 +104,6 @@ bool type_is_subscriptable(
 	TypeContext const *tc,
 	Type t
 );
+
+// SIZE_MAX == Not Found
+size_t type_lookup_id(TypeContext *tc, size_t id);

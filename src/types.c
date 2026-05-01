@@ -462,7 +462,7 @@ bool types_are_compatible(TypeContext const *tc, Type a, Type b)
 		}
 		return true;
 	case TYPE_TYPEDEF:
-		return types_are_equal(tc->types[a.typdef.backing], b);
+		return types_are_compatible(tc, tc->types[a.typdef.backing], b);
 		break;
 	}
 	__builtin_unreachable();
@@ -696,4 +696,14 @@ bool type_is_subscriptable(
 		return true;
 	default: return false;
 	}
+}
+
+size_t type_lookup_id(TypeContext *tc, size_t id)
+{
+	for(size_t i = 0; i < tc->count; i++) {
+		if(tc->types[i].type == TYPE_TYPEDEF) {
+			if(tc->types[i].typdef.id == id) return tc->types[i].typdef.backing;
+		}
+	}
+	return SIZE_MAX;
 }

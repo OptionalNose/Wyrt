@@ -237,7 +237,7 @@ void parser_print_ast(Parser *prs, FILE *file)
 			break;
 			
 		case AST_IDENT:
-			fprintf(file, "'%s'", prs->identifiers[prs->ast.nodes[i].ident.id]);
+			fprintf(file, "'%s'", id_get(prs->identifiers, prs->ast.nodes[i].ident.id));
 			break;  
 			
 		case AST_MODULE:
@@ -269,14 +269,14 @@ void parser_print_ast(Parser *prs, FILE *file)
 				file,
 				"%s '%s': %ji [= %ji]", 
 				prs->ast.nodes[i].var_decl.mut ? "var" : "const",
-				prs->identifiers[prs->ast.nodes[i].var_decl.id],
+				id_get(prs->identifiers, prs->ast.nodes[i].var_decl.id),
 				prs->ast.nodes[i].var_decl.data_type,
 				prs->ast.nodes[i].var_decl.initial
 			);
 			break;
 
 		case AST_FN_CALL:
-			fprintf(file, "%s(", prs->identifiers[prs->ast.nodes[i].fn_call.fn_id]);
+			fprintf(file, "%s(", id_get(prs->identifiers, prs->ast.nodes[i].fn_call.fn_id));
 			for(size_t j = 0; j < prs->ast.nodes[i].fn_call.arg_count; j++) {
 				fprintf(file, "%ji, ", prs->ast.nodes[i].fn_call.args[j]);
 			}
@@ -357,7 +357,7 @@ void parser_print_ast(Parser *prs, FILE *file)
 				fprintf(
 					file,
 					"%s: %zi, ",
-					prs->identifiers[prs->ast.nodes[i].struct_type.member_name_ids[j]],
+					id_get(prs->identifiers, prs->ast.nodes[i].struct_type.member_name_ids[j]),
 					prs->ast.nodes[i].struct_type.member_types[j]
 				);
 			}
@@ -370,7 +370,7 @@ void parser_print_ast(Parser *prs, FILE *file)
 				fprintf(
 					file,
 					".%s = %zi, ",
-					prs->identifiers[prs->ast.nodes[i].struct_lit.member_name_ids[j]],
+					id_get(prs->identifiers, prs->ast.nodes[i].struct_lit.member_name_ids[j]),
 					prs->ast.nodes[i].struct_lit.member_values[j]
 				);
 			}
@@ -382,7 +382,7 @@ void parser_print_ast(Parser *prs, FILE *file)
 				file,
 				"%zi.%s",
 				prs->ast.nodes[i].struct_access.parent,
-				prs->identifiers[prs->ast.nodes[i].struct_access.member_id]
+				id_get(prs->identifiers, prs->ast.nodes[i].struct_access.member_id)
 			);
 			break;
 
@@ -433,7 +433,7 @@ void parser_print_ast(Parser *prs, FILE *file)
 			fprintf(
 				file,
 				"typedef \"%s\" = %zi",
-				prs->identifiers[prs->ast.nodes[i].typdef.id],
+				id_get(prs->identifiers, prs->ast.nodes[i].typdef.id),
 				prs->ast.nodes[i].typdef.backing
 			);
 			break;

@@ -1,6 +1,25 @@
 #pragma once
 #include "util.h"
 
+typedef uint32_t Id;
+enum {
+	ID_BUILTIN_NONE,
+	ID_BUILTIN_U8,
+	ID_BUILTIN_S8,
+	ID_BUILTIN_U16,
+	ID_BUILTIN_S16,
+	ID_BUILTIN_U32,
+	ID_BUILTIN_S32,
+	ID_BUILTIN_U64,
+	ID_BUILTIN_S64,
+	ID_BUILTIN_VOID,
+	ID_BUILTIN_BOOL,
+	ID_BUILTIN_PTR,
+	ID_BUILTIN_LEN
+};
+
+char *id_get(char *const *table, Id id);
+
 typedef enum {
 	TOKEN_NONE,
 	TOKEN_EOF,
@@ -93,7 +112,7 @@ typedef union {
 	struct {
 		TokenType type;
 		DebugInfo debug_info;
-		size_t id;
+		Id id;
 	} ident;
 
 	struct {

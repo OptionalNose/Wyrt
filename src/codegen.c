@@ -214,7 +214,7 @@ static WyrtFunction *gen_fnsig(
 				&arg.debug.debug_info,
 				arg_type,
 				&scope->tc,
-				cg->identifiers[arg_id],
+				id_get(cg->identifiers, arg_id),
 				err
 			);
 			if(*err) goto RET;
@@ -241,7 +241,7 @@ static WyrtFunction *gen_fnsig(
 		(WyrtParam*)arg_bes.data,
 		arg_bes.count,
 		imported,
-		imported ? cg->strings[linkage_name] : cg->identifiers[id],
+		imported ? cg->strings[linkage_name] : id_get(cg->identifiers, id),
 		err
 	);
 	if(*err) goto RET;
@@ -1090,7 +1090,7 @@ ARRAY_LIT_CLEAN:
 		case TYPE_SLICE_CONST:
 		case TYPE_SLICE_ABYSS:
 		case TYPE_SLICE_VAR:
-			if(expr.struct_access.member_id == 10) {
+			if(expr.struct_access.member_id == ID_BUILTIN_PTR) {
 				ret.expr = cg->be.rvalue_field(
 					cg->ctx,
 					&expr.debug.debug_info,
@@ -1103,7 +1103,7 @@ ARRAY_LIT_CLEAN:
 				if(*err) goto RET;
 				ret.type = parent.type;
 				ret.type.type += TYPE_PAUL_CONST - TYPE_SLICE_CONST;
-			} else if(expr.struct_access.member_id == 11) {
+			} else if(expr.struct_access.member_id == ID_BUILTIN_LEN) {
 				ret.expr = cg->be.rvalue_field(
 					cg->ctx,
 					&expr.debug.debug_info,
@@ -1440,7 +1440,7 @@ static WyrtLvalue gen_var_decl(
 		block,
 		type,
 		&scope->tc,
-		cg->identifiers[statement->var_decl.id],
+		id_get(cg->identifiers, statement->var_decl.id),
 		err
 	);
 	if(*err) goto RET;
@@ -1780,7 +1780,7 @@ static void gen_if(
 			*be_block,
 			new.vars[new.var_count - 1].type,
 			&parent->tc,
-			cg->identifiers[decl.var_decl.id],
+			id_get(cg->identifiers, decl.var_decl.id),
 			err
 		);
 		if(*err) goto RET;

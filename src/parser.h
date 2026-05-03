@@ -117,7 +117,7 @@ typedef union {
 	struct {
 		AstNodeType type;
 		DebugInfo debug_info;
-		size_t id;
+		Id id;
 	} ident;
 
 	struct {
@@ -138,7 +138,7 @@ typedef union {
 		AstNodeType type;
 		DebugInfo debug_info;
 		bool mut;
-		size_t id;
+		Id id;
 		size_t data_type;
 		size_t initial; // 0 == none
 	} var_decl;
@@ -146,7 +146,7 @@ typedef union {
 	struct {
 		AstNodeType type;
 		DebugInfo debug_info;
-		size_t fn_id;
+		Id fn_id;
 		size_t arg_count;
 		size_t *args;
 	} fn_call;
@@ -201,14 +201,14 @@ typedef union {
 		AstNodeType type;
 		DebugInfo debug_info;
 		size_t member_count;
-		size_t *member_name_ids;
+		Id *member_name_ids;
 		size_t *member_types;
 	} struct_type;
 
 	struct {
 		AstNodeType type;
 		DebugInfo debug_info;
-		size_t parent_id; // 0 == anonymous
+		Id parent_id; // 0 == anonymous
 		size_t member_count;
 		size_t *member_name_ids;
 		size_t *member_values;
@@ -218,7 +218,7 @@ typedef union {
 		AstNodeType type;
 		DebugInfo debug_info;
 		size_t parent;
-		size_t member_id;
+		Id member_id;
 	} struct_access;
 
 	struct {
@@ -249,7 +249,7 @@ typedef union {
 	struct {
 		AstNodeType type;
 		DebugInfo debug_info;
-		size_t id;
+		Id id;
 		size_t backing;
 	} typdef;
 

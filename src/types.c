@@ -90,36 +90,36 @@ Type type_from_ast(TypeContext *tc, AstNode const *nodes, size_t i, Error *err)
 	switch(node->type) {
 	case AST_IDENT:
 		do {} while(0);
-		size_t id = node->ident.id;
+		Id id = node->ident.id;
 		switch(id) {
-		case 0:
+		case ID_BUILTIN_U8:
 			t = (Type) { .type = TYPE_PRIMITIVE_U8 };
 			break;
-		case 1:
+		case ID_BUILTIN_S8:
 			t = (Type) { .type = TYPE_PRIMITIVE_S8 };
 			break;
-		case 2:
+		case ID_BUILTIN_U16:
 			t = (Type) { .type = TYPE_PRIMITIVE_U16 };
 			break;
-		case 3:
+		case ID_BUILTIN_S16:
 			t = (Type) { .type = TYPE_PRIMITIVE_S16 };
 			break;
-		case 4:
+		case ID_BUILTIN_U32:
 			t = (Type) { .type = TYPE_PRIMITIVE_U32 };
 			break;
-		case 5:
+		case ID_BUILTIN_S32:
 			t = (Type) { .type = TYPE_PRIMITIVE_S32 };
 			break;
-		case 6:
+		case ID_BUILTIN_U64:
 			t = (Type) { .type = TYPE_PRIMITIVE_U64 };
 			break;
-		case 7:
+		case ID_BUILTIN_S64:
 			t = (Type) { .type = TYPE_PRIMITIVE_S64 };
 			break;
-		case 8:
+		case ID_BUILTIN_VOID:
 			t = (Type) { .type = TYPE_PRIMITIVE_VOID };
 			break;
-		case 9:
+		case ID_BUILTIN_BOOL:
 			t = (Type) { .type = TYPE_PRIMITIVE_BOOL };
 			break;
 		default: {
@@ -562,7 +562,7 @@ void type_print(FILE *file, TypeContext const *tc, Type t, char *const *identifi
 		fprintf(file, "}");
 		break;
 	case TYPE_TYPEDEF:
-		fprintf(file, "%s", identifiers[t.typdef.id]);
+		fprintf(file, "%s", id_get(identifiers, t.typdef.id));
 	}
 }
 

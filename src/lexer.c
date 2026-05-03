@@ -230,6 +230,7 @@ void lexer_tokenize(
 	uint32_t prev_col = 1;
 
 	const char *primitive_types[] = {
+		"~NONE~",
 		"u8",
 		"s8",
 		"u16",
@@ -700,7 +701,7 @@ void lexer_print_token_to_file(
 		fprintf(
 			file,
 			"Identifier '%s'",
-			identifiers[tok->ident.id]
+			id_get(identifiers, tok->ident.id)
 		);
 		break;
 	case TOKEN_INT_LIT:
@@ -824,4 +825,9 @@ void lexer_print_debug_to_file(FILE *file, DebugInfo const *debug)
 		"%s:%"PRIu32":%"PRIu32,
 		debug->file, debug->line, debug->col
 	);
+}
+
+char *id_get(char *const *table, Id id)
+{
+	return table[id];
 }

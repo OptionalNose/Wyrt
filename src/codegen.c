@@ -120,55 +120,56 @@ static WyrtFunction *gen_fnsig(
 	dynarr_init(&arg_ids, sizeof(size_t));
 	dynarr_init(&arg_bes, sizeof(WyrtParam));
 
-	AstNode ident = cg->nodes[cg->nodes[i].fn_def.ident];
-	assert(ident.type == AST_IDENT);
-	size_t id = ident.ident.id;
+	assert(cg->nodes[i].type == AST_FN_DEF);
+	Id id = cg->nodes[i].fn_def.id;
 
-	AstNode block = cg->nodes[cg->nodes[i].fn_def.block];
+	AstNode const *block = &cg->nodes[i + cg->nodes[i].fn_def.block];
 	bool imported;
 	size_t linkage_name;
 	
-	if(block.type == AST_EXTERN) {
-		AstNode name = cg->nodes[block.extrn.name];
-		assert(name.type == AST_STRING_LIT);
-		linkage_name = name.string_lit.id;
+	if(block->type == AST_EXTERN) {
+		AstNode const *name = block + block->extrn.name;
+		assert(name->type == AST_STRING_LIT);
+		linkage_name = name->string_lit.id;
 		imported = true;
 	} else {
 		linkage_name = id;
 		imported = false;
 	}
 
-	AstNode type = cg->nodes[cg->nodes[i].fn_def.fn_type];
+	size_t type_index = i + cg->nodes[i].fn_def.fn_type;
+	AstNode type = cg->nodes[type_index];
 	assert(type.type == AST_FN_TYPE);
 
 	Type ret = type_from_ast(
 		&scope->tc,
 		cg->nodes,
-		type.fn_type.ret_type,
+		type.fn_type.ret_type + type_index,
 		err
 	);
 	if(*err) goto RET;
 
 	size_t additional = 0;
+	AstNode const *arg = &cg->nodes[type_index + type.fn_type.args];
 	for(size_t i = 0; i < type.fn_type.arg_count; i++) {
+		assert(arg->type == AST_IDENT);
+		size_t arg_id = arg->ident.id;
+
+		arg += arg->com.next;
 		Type arg_type = type_from_ast(
 			&scope->tc,
 			cg->nodes,
-			type.fn_type.args[2*i + 1],
+			arg - cg->nodes,
 			err
 		);
 		if(*err) goto RET;
-
-		AstNode arg = cg->nodes[type.fn_type.args[2*i]];
-		assert(arg.type == AST_IDENT);
-
-		size_t arg_id = arg.ident.id;
 
 		dynarr_push(&args, &arg_type, err);
 		if(*err) goto RET;
 		dynarr_push(&arg_ids, &arg_id, err);
 		if(*err) goto RET;
 
+		arg += arg->com.next;
 		if(arg_type.type == TYPE_SLICE_CONST
 			|| arg_type.type == TYPE_SLICE_ABYSS
 			|| arg_type.type == TYPE_SLICE_VAR
@@ -184,7 +185,7 @@ static WyrtFunction *gen_fnsig(
 
 			WyrtParam arg_ptr_be = cg->be.new_param(
 				cg->ctx,
-				&arg.debug.debug_info,
+				&arg->com.debug,
 				ptr,
 				&scope->tc,
 				ptr_name,
@@ -194,7 +195,7 @@ static WyrtFunction *gen_fnsig(
 
 			WyrtParam arg_len_be = cg->be.new_param(
 				cg->ctx,
-				&arg.debug.debug_info,
+				&arg->com.debug,
 				(Type) {.type = TYPE_PRIMITIVE_U64},
 				&scope->tc,
 				len_name,
@@ -211,7 +212,7 @@ static WyrtFunction *gen_fnsig(
 		} else {
 			WyrtParam arg_be = cg->be.new_param(
 				cg->ctx,
-				&arg.debug.debug_info,
+				&arg->com.debug,
 				arg_type,
 				&scope->tc,
 				id_get(cg->identifiers, arg_id),
@@ -235,7 +236,7 @@ static WyrtFunction *gen_fnsig(
 
 	fn = cg->be.new_function(
 		cg->ctx,
-		&cg->nodes[i].debug.debug_info,
+		&cg->nodes[i].com.debug,
 		ret,
 		&scope->tc,
 		(WyrtParam*)arg_bes.data,
@@ -257,7 +258,7 @@ RET:
 }
 
 static Lvalue gen_lvalue(CodeGen *cg, size_t index, Scope *scope, Error *err);
-static Expr gen_fn_call(CodeGen *cg, AstNode expr, Scope *scope, Error *err);
+static Expr gen_fn_call(CodeGen *cg, size_t index, Scope *scope, Error *err);
 
 static WyrtRvalue gen_cast(
 	CodeGen *cg,
@@ -415,7 +416,7 @@ static Expr gen_expr(CodeGen *cg, Type expected, size_t index, Scope *scope, Err
 						stderr, cg->identifiers, cg->strings, &scope->tc,
 					   "Cannot use variable '%i' before it is declared at %l\n",
 				   		expr.ident.id,
-				 		&expr.debug.debug_info
+				 		&expr.com.debug
 					);		
 					*err = ERROR_UNEXPECTED_DATA;
 					goto RET;
@@ -436,7 +437,7 @@ static Expr gen_expr(CodeGen *cg, Type expected, size_t index, Scope *scope, Err
 			stderr, cg->identifiers, cg->strings, &scope->tc,
 			"Undeclared variable '%i' at %l\n",
 			expr.ident.id,
-			&expr.debug.debug_info
+			&expr.com.debug
 		);
 		*err = ERROR_UNEXPECTED_DATA;
 		goto RET;
@@ -469,16 +470,28 @@ static Expr gen_expr(CodeGen *cg, Type expected, size_t index, Scope *scope, Err
 				|| expected.type == TYPE_POINTER_VAR
 			)
 		) {
-			lhs = gen_expr(cg, (Type) {.type = TYPE_NONE}, expr.binop.lhs, scope, err);
+			lhs = gen_expr(
+				cg,
+				(Type) {.type = TYPE_NONE},
+				index + expr.binop.lhs,
+				scope,
+				err
+			);
 			if(*err) goto RET;
 
-			rhs = gen_expr(cg, (Type) {.type = TYPE_NONE}, expr.binop.rhs, scope, err);
+			rhs = gen_expr(
+				cg,
+				(Type) {.type = TYPE_NONE},
+				index + expr.binop.rhs,
+				scope,
+				err
+			);
 			if(*err) goto RET;
 		} else {
-			lhs = gen_expr(cg, expected, expr.binop.lhs, scope, err);
+			lhs = gen_expr(cg, expected, index + expr.binop.lhs, scope, err);
 			if(*err) goto RET;
 
-			rhs = gen_expr(cg, expected, expr.binop.rhs, scope, err);
+			rhs = gen_expr(cg, expected, index + expr.binop.rhs, scope, err);
 			if(*err) goto RET;
 		}
 
@@ -498,7 +511,7 @@ static Expr gen_expr(CodeGen *cg, Type expected, size_t index, Scope *scope, Err
 					"Cannot Perform Arithmetic on Incompatible Types '%t' and '%t' at %l\n",
 					lhs.type,
 					rhs.type,
-					&expr.debug.debug_info
+					&expr.com.debug
 				);
 				*err = ERROR_UNEXPECTED_DATA;
 				goto RET;
@@ -510,7 +523,7 @@ static Expr gen_expr(CodeGen *cg, Type expected, size_t index, Scope *scope, Err
 				stderr, cg->identifiers, cg->strings, &scope->tc,
 				"Cannot Perform Arithmetic on non-arithmetic Type '%t' at %l\n",
 				lhs.type,
-				&expr.debug.debug_info
+				&expr.com.debug
 			);
 			*err = ERROR_UNEXPECTED_DATA;
 			goto RET;
@@ -521,7 +534,7 @@ static Expr gen_expr(CodeGen *cg, Type expected, size_t index, Scope *scope, Err
 				stderr, cg->identifiers, cg->strings, &scope->tc,
 				"Cannot Perform Arithmetic on non-arithmetic Type '%t' at %l\n",
 				rhs.type,
-				&expr.debug.debug_info
+				&expr.com.debug
 			);
 			*err = ERROR_UNEXPECTED_DATA;
 			goto RET;
@@ -539,12 +552,19 @@ static Expr gen_expr(CodeGen *cg, Type expected, size_t index, Scope *scope, Err
 			} else {
 				ret.type = lhs.type;
 			}
-			rhs.expr = cg->be.new_cast(cg->ctx, &expr.debug.debug_info, rhs.expr, lhs.type, &scope->tc, err);
+			rhs.expr = cg->be.new_cast(
+				cg->ctx,
+				&expr.com.debug,
+				rhs.expr,
+				lhs.type,
+				&scope->tc,
+				err
+			);
 			if(*err) goto RET;
 
 			ret.expr = cg->be.rvalue_binary_op(
 				cg->ctx,
-				&expr.debug.debug_info,
+				&expr.com.debug,
 				expr.type,
 				ret.type,
 				&scope->tc,
@@ -574,7 +594,7 @@ static Expr gen_expr(CodeGen *cg, Type expected, size_t index, Scope *scope, Err
 						"Cannot add two pointers '%t' and '%t' together at %l\n",
 						lhs.type,
 						rhs.type,
-						&expr.debug.debug_info
+						&expr.com.debug
 					);
 					*err = ERROR_UNEXPECTED_DATA;
 					goto RET;
@@ -586,7 +606,14 @@ static Expr gen_expr(CodeGen *cg, Type expected, size_t index, Scope *scope, Err
 				if(rhs.type.type >= TYPE_PRIMITIVE_U8 && rhs.type.type <= TYPE_PRIMITIVE_U64) {
 					sign = rhs.type;
 					sign.type += TYPE_PRIMITIVE_S8 - TYPE_PRIMITIVE_U8;
-					offset = cg->be.new_cast(cg->ctx, &expr.debug.debug_info, offset, sign, &scope->tc, err);
+					offset = cg->be.new_cast(
+						cg->ctx,
+						&expr.com.debug,
+						offset,
+						sign,
+						&scope->tc,
+						err
+					);
 					if(*err) goto RET;
 				}
 			} else if(rhs.type.type == TYPE_PAUL_CONST
@@ -599,7 +626,14 @@ static Expr gen_expr(CodeGen *cg, Type expected, size_t index, Scope *scope, Err
 				if(lhs.type.type >= TYPE_PRIMITIVE_U8 && lhs.type.type <= TYPE_PRIMITIVE_U64) {
 					sign = lhs.type;
 					sign.type += TYPE_PRIMITIVE_S8 - TYPE_PRIMITIVE_U8;
-					offset = cg->be.new_cast(cg->ctx, &expr.debug.debug_info, offset, sign, &scope->tc, err);
+					offset = cg->be.new_cast(
+						cg->ctx,
+						&expr.com.debug,
+						offset,
+						sign,
+						&scope->tc,
+						err
+					);
 					if(*err) goto RET;
 				}
 			} else {
@@ -608,7 +642,7 @@ static Expr gen_expr(CodeGen *cg, Type expected, size_t index, Scope *scope, Err
 					"Cannot get pointer from arithmetic between non-pointer types '%t' and '%t' at %l\n",
 					lhs.type,
 					rhs.type,
-					&expr.debug.debug_info
+					&expr.com.debug
 				);
 				*err = ERROR_UNEXPECTED_DATA;
 				goto RET;
@@ -623,7 +657,7 @@ static Expr gen_expr(CodeGen *cg, Type expected, size_t index, Scope *scope, Err
 
 				offset = cg->be.rvalue_binary_op(
 					cg->ctx,
-					&expr.debug.debug_info,
+					&expr.com.debug,
 					AST_MUL,
 					sign,
 					&scope->tc,
@@ -639,16 +673,22 @@ static Expr gen_expr(CodeGen *cg, Type expected, size_t index, Scope *scope, Err
 					"Illegal operation between pointer type '%t' and integer type '%t' at %l\n",
 					lhs.type,
 					rhs.type,
-					&expr.debug.debug_info
+					&expr.com.debug
 				);
 				*err = ERROR_UNEXPECTED_DATA;
 				goto RET;
 			}
 
-			WyrtLvalue elem = cg->be.lvalue_subscript(cg->ctx, &expr.debug.debug_info, ptr, offset, err);
+			WyrtLvalue elem = cg->be.lvalue_subscript(
+				cg->ctx,
+				&expr.com.debug,
+				ptr,
+				offset,
+				err
+			);
 			if(*err) goto RET;
 
-			ret.expr = cg->be.rvalue_address(cg->ctx, &expr.debug.debug_info, elem, err);
+			ret.expr = cg->be.rvalue_address(cg->ctx, &expr.com.debug, elem, err);
 			if(*err) goto RET;
 		} else {
 			if(expr.type == AST_COMP_EQ
@@ -662,12 +702,19 @@ static Expr gen_expr(CodeGen *cg, Type expected, size_t index, Scope *scope, Err
 			} else {
 				ret.type = rhs.type;
 			}
-			lhs.expr = cg->be.new_cast(cg->ctx, &expr.debug.debug_info, lhs.expr, rhs.type, &scope->tc, err);
+			lhs.expr = cg->be.new_cast(
+				cg->ctx,
+				&expr.com.debug,
+				lhs.expr,
+				rhs.type,
+				&scope->tc,
+				err
+			);
 			if(*err) goto RET;
 
 			ret.expr = cg->be.rvalue_binary_op(
 				cg->ctx,
-				&expr.debug.debug_info,
+				&expr.com.debug,
 				expr.type,
 				ret.type,
 				&scope->tc,
@@ -677,11 +724,10 @@ static Expr gen_expr(CodeGen *cg, Type expected, size_t index, Scope *scope, Err
 			);
 			if(*err) goto RET;
 		}
-
 	} break;
 
 	case AST_LOGIC_NOT: {
-		Expr val = gen_expr(cg, expected, expr.unary_op.val, scope, err);
+		Expr val = gen_expr(cg, expected, index + expr.unary_op.val, scope, err);
 		if(*err) goto RET;
 
 		if(!type_is_arithmetic(val.type)
@@ -694,7 +740,7 @@ static Expr gen_expr(CodeGen *cg, Type expected, size_t index, Scope *scope, Err
 				stderr, cg->identifiers, cg->strings, &scope->tc,
 				"Cannot Perform Arithmetic on non-arithmetic Type '%t' at %l\n",
 				val.type,
-				&expr.debug.debug_info
+				&expr.com.debug
 			);
 			*err = ERROR_UNEXPECTED_DATA;
 			goto RET;
@@ -702,7 +748,7 @@ static Expr gen_expr(CodeGen *cg, Type expected, size_t index, Scope *scope, Err
 
 		ret.expr = cg->be.rvalue_unary_op(
 			cg->ctx,
-			&expr.debug.debug_info,
+			&expr.com.debug,
 			expr.type,
 			TYPE_PRIMITIVE_BOOL,
 			val.expr,
@@ -714,26 +760,52 @@ static Expr gen_expr(CodeGen *cg, Type expected, size_t index, Scope *scope, Err
 	} break;
 
 	case AST_FN_CALL:
-		ret = gen_fn_call(cg, expr, scope, err);
+		ret = gen_fn_call(cg, index, scope, err);
 		if(*err) goto RET;
 		break;
 
 	case AST_DEREF: {
 		Type ptr_type = types_get_ptr(&scope->tc, expected, TYPE_POINTER_CONST);
-		Expr ptr = gen_expr(cg, ptr_type, expr.unary_op.val, scope, err);
+		Expr ptr = gen_expr(cg, ptr_type, index + expr.unary_op.val, scope, err);
 		if(*err) goto RET;
+
+		if(ptr.type.type != TYPE_POINTER_CONST
+			&& ptr.type.type != TYPE_POINTER_VAR
+			&& ptr.type.type != TYPE_PAUL_CONST
+			&& ptr.type.type != TYPE_PAUL_VAR
+		) {
+			if(ptr.type.type == TYPE_POINTER_ABYSS
+				|| ptr.type.type == TYPE_PAUL_ABYSS
+			) {
+				wyrt_diag(
+					stderr, cg->identifiers, cg->strings, &scope->tc,
+					"Cannot read data from Abyssal Pointer at %l\n",
+					&expr.com.debug
+				);
+				*err = ERROR_UNEXPECTED_DATA;
+				goto RET;
+			}
+			wyrt_diag(
+				stderr, cg->identifiers, cg->strings, &scope->tc,
+				"Cannot Dereference non-Pointer Type '%t' at %l\n",
+				ptr.type,
+				&expr.com.debug
+			);
+			*err = ERROR_UNEXPECTED_DATA;
+			goto RET;
+		}
 		
-		WyrtLvalue *lval = cg->be.lvalue_deref(cg->ctx, &expr.debug.debug_info, ptr.expr, err);
+		WyrtLvalue *lval = cg->be.lvalue_deref(cg->ctx, &expr.com.debug, ptr.expr, err);
 		if(*err) goto RET;
 		ret.expr = cg->be.rvalue_from_lvalue(lval);
-		ret.type = expected;
+		ret.type = scope->tc.types[ptr.type.pointer.base];
 	} break;
 	
 	case AST_ADDR: {
-		Lvalue val = gen_lvalue(cg, expr.unary_op.val, scope, err);
+		Lvalue val = gen_lvalue(cg, index + expr.unary_op.val, scope, err);
 		if(*err) goto RET;
 
-		ret.expr = cg->be.rvalue_address(cg->ctx, &expr.debug.debug_info, val.lvalue, err);
+		ret.expr = cg->be.rvalue_address(cg->ctx, &expr.com.debug, val.lvalue, err);
 		if(*err) goto RET;
 
 		ret.type = types_get_ptr(
@@ -755,7 +827,7 @@ static Expr gen_expr(CodeGen *cg, Type expected, size_t index, Scope *scope, Err
 				stderr, cg->identifiers, cg->strings, &scope->tc,
 				"Cannot Coerce Array Literal to non-Array Type '%t' at %l\n",
 				expected,
-				&expr.debug.debug_info
+				&expr.com.debug
 			);
 			*err = ERROR_UNEXPECTED_DATA;
 			goto RET;
@@ -767,7 +839,7 @@ static Expr gen_expr(CodeGen *cg, Type expected, size_t index, Scope *scope, Err
 				"Cannot Coerce Array Literal of Length %z to Array of Length %z at %l\n",
 				expr.array_lit.elem_count,
 				expected.array.len,
-				&expr.debug.debug_info
+				&expr.com.debug
 			);
 			*err = ERROR_UNEXPECTED_DATA;
 			goto RET;
@@ -778,20 +850,22 @@ static Expr gen_expr(CodeGen *cg, Type expected, size_t index, Scope *scope, Err
 		WyrtRvalue *elems = malloc(sizeof(*elems) * expr.array_lit.elem_count);
 		CHECK_MALLOC(elems);
 
+		size_t elem_index = index + expr.array_lit.elems;
 		for(size_t i = 0; i < expr.array_lit.elem_count; i++) {
 			elems[i] = gen_expr(
 				cg,
 				elem_type,
-				expr.array_lit.elems[i],
+				elem_index,
 				scope,
 				err
 			).expr;
 			if(*err) goto ARRAY_LIT_CLEAN;
+			elem_index += cg->nodes[elem_index].com.next;
 		}
 
 		ret.expr = cg->be.rvalue_array_lit(
 			cg->ctx,
-			&expr.debug.debug_info,
+			&expr.com.debug,
 			expected,
 			&scope->tc,
 			elems,
@@ -817,7 +891,7 @@ ARRAY_LIT_CLEAN:
 		Expr arr = gen_expr(
 			cg,
 			(Type) {.type = TYPE_NONE},
-			expr.subscript.arr,
+			index + expr.subscript.arr,
 			scope,
 			err
 		);
@@ -827,7 +901,7 @@ ARRAY_LIT_CLEAN:
 				stderr, cg->identifiers, cg->strings, &scope->tc,
 				"Cannot Subscript non-Subscriptable Type '%t' at %l\n",
 				arr.type,
-				&expr.debug.debug_info
+				&expr.com.debug
 			);
 			*err = ERROR_UNEXPECTED_DATA;
 			goto RET;
@@ -838,16 +912,16 @@ ARRAY_LIT_CLEAN:
 			wyrt_diag(
 				stderr, cg->identifiers, cg->strings, &scope->tc,
 				"Cannot Read Data from abyssal Pointer at %l\n",
-				&expr.debug.debug_info
+				&expr.com.debug
 			);
 			*err = ERROR_UNEXPECTED_DATA;
 			goto RET;
 		}
 
-		Expr index = gen_expr(
+		Expr arr_index = gen_expr(
 			cg,
 			(Type) {.type = TYPE_PRIMITIVE_U64},
-			expr.subscript.index,
+			index + expr.subscript.index,
 			scope,
 			err
 		);
@@ -858,7 +932,7 @@ ARRAY_LIT_CLEAN:
 		) {
 			arr.expr = cg->be.rvalue_field(
 				cg->ctx,
-				&expr.debug.debug_info,
+				&expr.com.debug,
 				arr.expr,
 				arr.type,
 				&scope->tc,
@@ -871,9 +945,9 @@ ARRAY_LIT_CLEAN:
 
 		WyrtLvalue subs = cg->be.lvalue_subscript(
 			cg->ctx,
-			&expr.debug.debug_info,
+			&expr.com.debug,
 			arr.expr,
-			index.expr,
+			arr_index.expr,
 			err
 		);
 		if(*err) goto RET;
@@ -888,7 +962,7 @@ ARRAY_LIT_CLEAN:
 				stderr, cg->identifiers, cg->strings, &scope->tc,
 				"Cannot Coerce Struct-Literal to non-struct Type '%t' at %l\n",
 				expected,
-				&expr.debug.debug_info
+				&expr.com.debug
 			);
 			*err = ERROR_UNEXPECTED_DATA;
 			goto RET;
@@ -900,7 +974,7 @@ ARRAY_LIT_CLEAN:
 					stderr, cg->identifiers, cg->strings, &scope->tc,
 					"Cannot Instantiate Anonymous Struct Literal without any Destination Type "
 					"at %l\n",
-					&expr.debug.debug_info
+					&expr.com.debug
 				);
 				*err = ERROR_UNEXPECTED_DATA;
 				goto RET;
@@ -915,7 +989,7 @@ ARRAY_LIT_CLEAN:
 					expr.struct_lit.member_count,
 					expected,
 					expected.struct_type.member_count,
-					&expr.debug.debug_info
+					&expr.com.debug
 				);
 				*err = ERROR_UNEXPECTED_DATA;
 				goto RET;
@@ -927,7 +1001,7 @@ ARRAY_LIT_CLEAN:
 					stderr, cg->identifiers, cg->strings, &scope->tc,
 					"Could not find a type called '%i' at %l\n",
 					expr.struct_lit.parent_id,
-					&expr.debug.debug_info
+					&expr.com.debug
 				);
 				*err = ERROR_UNEXPECTED_DATA;
 				goto RET;
@@ -938,7 +1012,7 @@ ARRAY_LIT_CLEAN:
 					stderr, cg->identifiers, cg->strings, &scope->tc,
 					"Cannot create Struct Literal of non-Struct Type '%t' at %l\n",
 					named,
-					&expr.debug.debug_info
+					&expr.com.debug
 				);
 				*err = ERROR_UNEXPECTED_DATA;
 				goto RET;
@@ -957,7 +1031,7 @@ ARRAY_LIT_CLEAN:
 						"different name ('%i') at %l\n",
 						expr.struct_lit.parent_id,
 						name,
-						&expr.debug.debug_info
+						&expr.com.debug
 					);
 					*err = ERROR_UNEXPECTED_DATA;
 					goto RET;
@@ -970,7 +1044,7 @@ ARRAY_LIT_CLEAN:
 					"Struct Literal of type '%t' cannot be coerced into Struct Type '%t' at %l\n",
 					scope->tc.types[named],
 					maybe_typedef,
-					&expr.debug.debug_info
+					&expr.com.debug
 				);
 				*err = ERROR_UNEXPECTED_DATA;
 				goto RET;
@@ -980,15 +1054,19 @@ ARRAY_LIT_CLEAN:
 		WyrtRvalue *members = malloc(sizeof(*members) * expected.struct_type.member_count);
 		CHECK_MALLOC(members);
 
+		AstNode const *member_name = &cg->nodes[index + expr.struct_lit.member_names];
+		size_t member_value_index = index + expr.struct_lit.member_values;
 		for(size_t i = 0; i < expr.struct_lit.member_count; i++) {
 			bool found = false;
-			size_t id = expr.struct_lit.member_name_ids[i];
+			assert(member_name->type == AST_IDENT);
+			size_t id = member_name->ident.id;
+
 			for(size_t j = 0; j < expected.struct_type.member_count; j++) {
 				if(expected.struct_type.member_name_ids[j] == id) {
 					members[j] = gen_expr(
 						cg,
 						scope->tc.types[expected.struct_type.member_types[i]],
-						expr.struct_lit.member_values[i],
+						member_value_index,
 						scope,
 						err
 					).expr;
@@ -1012,6 +1090,9 @@ ARRAY_LIT_CLEAN:
 				free(members);
 				goto RET;
 			}
+
+			member_value_index += cg->nodes[member_value_index].com.next;
+			member_name += member_name->com.next;
 		}
 
 		for(size_t i = 0; i < expected.struct_type.member_count; i++) {
@@ -1032,7 +1113,7 @@ ARRAY_LIT_CLEAN:
 
 		ret.expr = cg->be.rvalue_struct_lit(
 			cg->ctx,
-			&expr.debug.debug_info,
+			&expr.com.debug,
 			expected,
 			&scope->tc,
 			members,
@@ -1049,7 +1130,7 @@ ARRAY_LIT_CLEAN:
 		Expr parent = gen_expr(
 			cg,
 			(Type) {.type = TYPE_NONE},
-			expr.struct_access.parent,
+			index + expr.struct_access.parent,
 			scope,
 			err
 		);
@@ -1057,12 +1138,12 @@ ARRAY_LIT_CLEAN:
 
 		ret.expr = NULL;
 		switch(parent.type.type) {
-		case TYPE_STRUCT:
+		case TYPE_STRUCT: {
 			for(size_t i = 0; i < parent.type.struct_type.member_count; i++) {
 				if(parent.type.struct_type.member_name_ids[i] == expr.struct_access.member_id) {
 					ret.expr = cg->be.rvalue_field(
 						cg->ctx,
-						&expr.debug.debug_info,
+						&expr.com.debug,
 						parent.expr,
 						parent.type,
 						&scope->tc,
@@ -1071,21 +1152,22 @@ ARRAY_LIT_CLEAN:
 					);
 					if(*err) goto RET;
 					ret.type = scope->tc.types[parent.type.struct_type.member_types[i]];
+					break;
 				}
 			}
 
 			if(!ret.expr) {
 				wyrt_diag(
 					stderr, cg->identifiers, cg->strings, &scope->tc,
-					"No Members '%i' in struct '%t' at %l\n",
+					"No Member '%i' in struct '%t' at %l\n",
 					expr.struct_access.member_id,
 					parent.type,
-					&expr.debug.debug_info
+					&expr.com.debug
 				);
 				*err = ERROR_UNEXPECTED_DATA;
 				goto RET;
 			}
-			break;
+		} break;
 
 		case TYPE_SLICE_CONST:
 		case TYPE_SLICE_ABYSS:
@@ -1093,7 +1175,7 @@ ARRAY_LIT_CLEAN:
 			if(expr.struct_access.member_id == ID_BUILTIN_PTR) {
 				ret.expr = cg->be.rvalue_field(
 					cg->ctx,
-					&expr.debug.debug_info,
+					&expr.com.debug,
 					parent.expr,
 					parent.type,
 					&scope->tc,
@@ -1106,7 +1188,7 @@ ARRAY_LIT_CLEAN:
 			} else if(expr.struct_access.member_id == ID_BUILTIN_LEN) {
 				ret.expr = cg->be.rvalue_field(
 					cg->ctx,
-					&expr.debug.debug_info,
+					&expr.com.debug,
 					parent.expr,
 					parent.type,
 					&scope->tc,
@@ -1120,7 +1202,7 @@ ARRAY_LIT_CLEAN:
 					stderr, cg->identifiers, cg->strings, &scope->tc,
 					"No Member '%i' in slice at %l\n",
 					expr.struct_access.member_id,
-					&expr.debug.debug_info
+					&expr.com.debug
 				);
 				*err = ERROR_UNEXPECTED_DATA;
 				goto RET;
@@ -1132,7 +1214,7 @@ ARRAY_LIT_CLEAN:
 				stderr, cg->identifiers, cg->strings, &scope->tc,
 				"Cannot Access Member of non-struct and non-slice Type %t at %l\n",
 				parent.type,
-				&expr.debug.debug_info
+				&expr.com.debug
 			);
 			*err = ERROR_UNEXPECTED_DATA;
 			goto RET;
@@ -1147,7 +1229,7 @@ ARRAY_LIT_CLEAN:
 		WyrtRvalue vals[2];
 		vals[0] = cg->be.rvalue_cstring_lit(
 			cg->ctx,
-			&expr.debug.debug_info,
+			&expr.com.debug,
 			cg->strings[expr.string_lit.id],
 			err
 		);
@@ -1163,7 +1245,7 @@ ARRAY_LIT_CLEAN:
 
 		ret.expr = cg->be.rvalue_struct_lit(
 			cg->ctx,
-			&expr.debug.debug_info,
+			&expr.com.debug,
 			ret.type,
 			&scope->tc,
 			vals,
@@ -1178,7 +1260,7 @@ ARRAY_LIT_CLEAN:
 
 		ret.expr = cg->be.rvalue_cstring_lit(
 			cg->ctx,
-			&expr.debug.debug_info,
+			&expr.com.debug,
 			cg->strings[expr.string_lit.id],
 			err
 		);
@@ -1189,7 +1271,7 @@ ARRAY_LIT_CLEAN:
 		Expr parent = gen_expr(
 			cg,
 			(Type) {.type = TYPE_NONE},
-			expr.struct_access.parent,
+			index + expr.struct_access.parent,
 			scope,
 			err
 		);
@@ -1202,7 +1284,7 @@ ARRAY_LIT_CLEAN:
 				stderr, cg->identifiers, cg->strings, &scope->tc,
 				"Cannot Dereference non-pointer Type '%t' at %l\n",
 				parent.type,
-				&expr.debug.debug_info
+				&expr.com.debug
 			);
 			*err = ERROR_UNEXPECTED_DATA;
 			goto RET;
@@ -1216,7 +1298,7 @@ ARRAY_LIT_CLEAN:
 				stderr, cg->identifiers, cg->strings, &scope->tc,
 				"Cannot Access Member of non-struct Type '%t' at %l\n",
 				parent_struct,
-				&expr.debug.debug_info
+				&expr.com.debug
 			);
 			*err = ERROR_UNEXPECTED_DATA;
 			goto RET;
@@ -1227,7 +1309,7 @@ ARRAY_LIT_CLEAN:
 			if(parent_struct.struct_type.member_name_ids[i] == expr.struct_access.member_id) {
 				WyrtLvalue *lval = cg->be.lvalue_deref_field(
 					cg->ctx,
-					&expr.debug.debug_info,
+					&expr.com.debug,
 					parent.expr,
 					parent_struct,
 					&scope->tc,
@@ -1245,7 +1327,7 @@ ARRAY_LIT_CLEAN:
 				"No Members '%i' in struct '%t' at %l\n",
 				expr.struct_access.member_id,
 				parent.type,
-				&expr.debug.debug_info
+				&expr.com.debug
 			);
 			*err = ERROR_UNEXPECTED_DATA;
 			goto RET;
@@ -1256,7 +1338,7 @@ ARRAY_LIT_CLEAN:
 		wyrt_diag(
 			stderr, cg->identifiers, cg->strings, &scope->tc,
 			"Expected Expression at %l\n",
-			&expr.debug.debug_info
+			&expr.com.debug
 		);
 		*err = ERROR_UNEXPECTED_DATA;
 		goto RET;
@@ -1274,12 +1356,12 @@ RET:
 				"Cannot Coerce between Expression Type '%t' and Expected '%t' at %l\n",
 				ret.type,
 				expected,
-				&expr.debug.debug_info
+				&expr.com.debug
 			);
 			*err = ERROR_UNEXPECTED_DATA;
 			goto RET_FAIL;
 		} else if(expected.type && !types_are_equal(ret.type, expected)) {
-			ret.expr = gen_cast(cg, ret, expected, &scope->tc, &expr.debug.debug_info, err);
+			ret.expr = gen_cast(cg, ret, expected, &scope->tc, &expr.com.debug, err);
 			ret.type = expected;
 		}
 	}
@@ -1287,12 +1369,13 @@ RET_FAIL:
 	return ret;
 }
 
-static Expr gen_fn_call(CodeGen *cg, AstNode expr, Scope *scope, Error *err)
+static Expr gen_fn_call(CodeGen *cg, size_t index, Scope *scope, Error *err)
 {
 	Expr ret;
 	DynArr args;
 	dynarr_init(&args, sizeof(WyrtRvalue));
 
+	AstNode expr = cg->nodes[index];
 	bool found = false;
 	FnSig sig;
 	WyrtFunction fn;
@@ -1309,7 +1392,7 @@ static Expr gen_fn_call(CodeGen *cg, AstNode expr, Scope *scope, Error *err)
 			stderr, cg->identifiers, NULL, NULL,
 			"No Function '%i' at %l\n",
 			expr.fn_call.fn_id,
-			&expr.debug.debug_info
+			&expr.com.debug
 		);
 		*err = ERROR_UNEXPECTED_DATA;
 		goto RET;
@@ -1323,14 +1406,15 @@ static Expr gen_fn_call(CodeGen *cg, AstNode expr, Scope *scope, Error *err)
 			"Expected %z arguments to function call, found %z at %l\n",
 			sig.arg_count,
 			expr.fn_call.arg_count,
-			&expr.debug.debug_info
+			&expr.com.debug
 		);
 		*err = ERROR_UNEXPECTED_DATA;
 		goto RET;	
 	}
 
+	size_t arg_idx = index + expr.fn_call.args;
 	for(size_t i = 0; i < sig.arg_count; i++) {
-		Expr arg = gen_expr(cg, sig.args[i], expr.fn_call.args[i], scope, err);
+		Expr arg = gen_expr(cg, sig.args[i], arg_idx, scope, err);
 		if(*err) goto RET;
 
 		if(arg.type.type == TYPE_SLICE_CONST
@@ -1339,7 +1423,7 @@ static Expr gen_fn_call(CodeGen *cg, AstNode expr, Scope *scope, Error *err)
 		) {
 			WyrtRvalue ptr = cg->be.rvalue_field(
 				cg->ctx,
-				&expr.debug.debug_info,
+				&expr.com.debug,
 				arg.expr,
 				arg.type,
 				&scope->tc,
@@ -1350,7 +1434,7 @@ static Expr gen_fn_call(CodeGen *cg, AstNode expr, Scope *scope, Error *err)
 
 			WyrtRvalue len = cg->be.rvalue_field(
 				cg->ctx,
-				&expr.debug.debug_info,
+				&expr.com.debug,
 				arg.expr,
 				arg.type,
 				&scope->tc,
@@ -1368,11 +1452,13 @@ static Expr gen_fn_call(CodeGen *cg, AstNode expr, Scope *scope, Error *err)
 			dynarr_push(&args, &arg.expr, err);
 			if(*err) goto RET;
 		}
+
+		arg_idx += cg->nodes[arg_idx].com.next;
 	}
 
 	ret.expr = cg->be.rvalue_fn_call(
 		cg->ctx,
-		&expr.debug.debug_info,
+		&expr.com.debug,
 		fn,
 		args.data,
 		args.count,
@@ -1387,7 +1473,7 @@ RET:
 
 static WyrtLvalue gen_var_decl(
 	CodeGen *cg,
-	const AstNode *statement,
+	size_t index,
 	WyrtBlock *block,
 	Var *var,
 	Scope *scope,
@@ -1396,51 +1482,58 @@ static WyrtLvalue gen_var_decl(
 {
 	WyrtLvalue be_var = NULL;
 
-	Type type = type_from_ast(&scope->tc, cg->nodes, statement->var_decl.data_type, err);
+	AstNode statement = cg->nodes[index];
+
+	Type type = type_from_ast(
+		&scope->tc,
+		cg->nodes,
+		index + statement.var_decl.data_type,
+		err
+	);
 	if(*err) goto RET;
 
 	if(type.type == TYPE_ARRAY) {
 		if(type.array.len == 0) {
-			if(!statement->var_decl.initial) {
+			if(!statement.var_decl.initial) {
 				wyrt_diag(
 					stderr, cg->identifiers, cg->strings, &scope->tc,
 					"Cannot Infer Length of Array '%i' when no Initializer is present at %l\n",
-					statement->var_decl.id,
-					&statement->debug.debug_info
+					statement.var_decl.id,
+					&statement.com.debug
 				);
 				*err = ERROR_UNEXPECTED_DATA;
 				goto RET;
 			}
 
-			if(cg->nodes[statement->var_decl.initial].type != AST_ARRAY_LIT) {
+			if(cg->nodes[index + statement.var_decl.initial].type != AST_ARRAY_LIT) {
 				wyrt_diag(
 					stderr, cg->identifiers, cg->strings, &scope->tc,
 					"Cannot Initialize Array '%i' with Value that is not an array literal at %l\n",
-					statement->var_decl.id,
-					&statement->debug.debug_info
+					statement.var_decl.id,
+					&statement.com.debug
 				);
 				*err = ERROR_UNEXPECTED_DATA;
 				goto RET;
 			}
 
-			type.array.len = cg->nodes[statement->var_decl.initial].array_lit.elem_count;
+			type.array.len = cg->nodes[index + statement.var_decl.initial].array_lit.elem_count;
 		}
 	}
 
 	*var = (Var) {
-		.id = statement->var_decl.id,
+		.id = statement.var_decl.id,
 		.type = type,
-		.mut = statement->var_decl.mut,
+		.mut = statement.var_decl.mut,
 		.declared = false,
 	};
 
 	be_var = cg->be.block_new_variable(
 		cg->ctx,
-		&statement->debug.debug_info,
+		&statement.com.debug,
 		block,
 		type,
 		&scope->tc,
-		id_get(cg->identifiers, statement->var_decl.id),
+		id_get(cg->identifiers, statement.var_decl.id),
 		err
 	);
 	if(*err) goto RET;
@@ -1463,7 +1556,7 @@ static Lvalue gen_lvalue(CodeGen *cg, size_t index, Scope *scope, Error *err)
 						stderr, cg->identifiers, cg->strings, &scope->tc,
 						"Cannot Assign to Variable '%i' at %l before it is Declared!\n",
 						var.ident.id,
-						&var.debug.debug_info
+						&var.com.debug
 					);
 					*err = ERROR_UNEXPECTED_DATA;
 					goto RET;
@@ -1481,14 +1574,14 @@ static Lvalue gen_lvalue(CodeGen *cg, size_t index, Scope *scope, Error *err)
 			stderr, cg->identifiers, cg->strings, &scope->tc,
 			"Cannot Assign to Undeclared Variable '%i' at %l\n",
 			var.ident.id,
-			&var.debug.debug_info
+			&var.com.debug
 		);
 		*err = ERROR_UNEXPECTED_DATA;
 		goto RET;
 	} break;	
 
 	case AST_DEREF: {
-		Expr ptr = gen_expr(cg, (Type) {.type = TYPE_NONE}, var.unary_op.val, scope, err);
+		Expr ptr = gen_expr(cg, (Type) {.type = TYPE_NONE}, index + var.unary_op.val, scope, err);
 		if(*err) goto RET;
 
 		if(ptr.type.type != TYPE_POINTER_ABYSS
@@ -1498,7 +1591,7 @@ static Lvalue gen_lvalue(CodeGen *cg, size_t index, Scope *scope, Error *err)
 				stderr, cg->identifiers, cg->strings, &scope->tc,
 				"Cannot Dereference non-Pointer Type '%t' at %l\n",
 				ptr.type,
-				&var.debug.debug_info
+				&var.com.debug
 			);
 			*err = ERROR_UNEXPECTED_DATA;
 			goto RET;
@@ -1506,7 +1599,7 @@ static Lvalue gen_lvalue(CodeGen *cg, size_t index, Scope *scope, Error *err)
 
 		ret.lvalue = cg->be.lvalue_deref(
 			cg->ctx,
-			&var.debug.debug_info,
+			&var.com.debug,
 			ptr.expr,
 			err
 		);
@@ -1519,7 +1612,7 @@ static Lvalue gen_lvalue(CodeGen *cg, size_t index, Scope *scope, Error *err)
 	case AST_STRUCT_ACCESS: {
 		Lvalue parent = gen_lvalue(
 			cg,
-			var.struct_access.parent,
+			index + var.struct_access.parent,
 			scope,
 			err
 		);
@@ -1530,7 +1623,7 @@ static Lvalue gen_lvalue(CodeGen *cg, size_t index, Scope *scope, Error *err)
 				stderr, cg->identifiers, cg->strings, &scope->tc,
 				"Cannot Access Member in non-struct Type '%t' at %l\n",
 				parent.type,
-				&var.debug.debug_info
+				&var.com.debug
 			);
 			*err = ERROR_UNEXPECTED_DATA;
 			goto RET;
@@ -1551,7 +1644,7 @@ static Lvalue gen_lvalue(CodeGen *cg, size_t index, Scope *scope, Error *err)
 				"No Member '%i' in struct '%t' at %l\n",
 				var.struct_access.member_id,
 				parent.type,
-				&var.debug.debug_info
+				&var.com.debug
 			);
 			*err = ERROR_UNEXPECTED_DATA;
 			goto RET;
@@ -1559,7 +1652,7 @@ static Lvalue gen_lvalue(CodeGen *cg, size_t index, Scope *scope, Error *err)
 
 		ret.lvalue = cg->be.lvalue_field(
 			cg->ctx,
-			&var.debug.debug_info,
+			&var.com.debug,
 			parent.lvalue,
 			parent.type,
 			&scope->tc,
@@ -1575,7 +1668,7 @@ static Lvalue gen_lvalue(CodeGen *cg, size_t index, Scope *scope, Error *err)
 		Expr arr = gen_expr(
 			cg,
 			(Type) {.type = TYPE_NONE},
-			var.subscript.arr,
+			index + var.subscript.arr,
 			scope,
 			err
 		);
@@ -1586,16 +1679,16 @@ static Lvalue gen_lvalue(CodeGen *cg, size_t index, Scope *scope, Error *err)
 				stderr, cg->identifiers, cg->strings, &scope->tc,
 				"Cannot subscript non-Subscriptable Type '%t' at %l\n",
 				arr.type,
-				&var.debug.debug_info
+				&var.com.debug
 			);
 			*err = ERROR_UNEXPECTED_DATA;
 			goto RET;
 		}
 
-		Expr index = gen_expr(
+		Expr arr_index = gen_expr(
 			cg,
 			(Type) {.type = TYPE_PRIMITIVE_U64},
-			var.subscript.index,
+			index + var.subscript.index,
 			scope,
 			err
 		);
@@ -1603,9 +1696,9 @@ static Lvalue gen_lvalue(CodeGen *cg, size_t index, Scope *scope, Error *err)
 
 		ret.lvalue = cg->be.lvalue_subscript(
 			cg->ctx,
-			&var.debug.debug_info,
+			&var.com.debug,
 			arr.expr,
-			index.expr,
+			arr_index.expr,
 			err
 		);
 		if(*err) goto RET;
@@ -1641,7 +1734,7 @@ static Lvalue gen_lvalue(CodeGen *cg, size_t index, Scope *scope, Error *err)
 		Expr parent = gen_expr(
 			cg,
 			(Type) {.type = TYPE_NONE},
-			var.struct_access.parent,
+			index + var.struct_access.parent,
 			scope,
 			err
 		);
@@ -1655,7 +1748,7 @@ static Lvalue gen_lvalue(CodeGen *cg, size_t index, Scope *scope, Error *err)
 				stderr, cg->identifiers, cg->strings, &scope->tc,
 				"Cannot Dereference non-pointer Type '%t' at %l\n",
 				parent.type,
-				&var.debug.debug_info
+				&var.com.debug
 			);
 			*err = ERROR_UNEXPECTED_DATA;
 			goto RET;
@@ -1670,7 +1763,7 @@ static Lvalue gen_lvalue(CodeGen *cg, size_t index, Scope *scope, Error *err)
 				stderr, cg->identifiers, cg->strings, &scope->tc,
 				"Cannot Access Member in non-struct Type '%t' at %l\n",
 				parent_struct,
-				&var.debug.debug_info
+				&var.com.debug
 			);
 			*err = ERROR_UNEXPECTED_DATA;
 			goto RET;
@@ -1691,7 +1784,7 @@ static Lvalue gen_lvalue(CodeGen *cg, size_t index, Scope *scope, Error *err)
 				"No Member '%i' in struct '%t' at %l\n",
 				var.struct_access.member_id,
 				parent_struct,
-				&var.debug.debug_info
+				&var.com.debug
 			);
 			*err = ERROR_UNEXPECTED_DATA;
 			goto RET;
@@ -1699,7 +1792,7 @@ static Lvalue gen_lvalue(CodeGen *cg, size_t index, Scope *scope, Error *err)
 
 		ret.lvalue = cg->be.lvalue_deref_field(
 			cg->ctx,
-			&var.debug.debug_info,
+			&var.com.debug,
 			parent.expr,
 			parent_struct,
 			&scope->tc,
@@ -1715,7 +1808,7 @@ static Lvalue gen_lvalue(CodeGen *cg, size_t index, Scope *scope, Error *err)
 		wyrt_diag(
 			stderr, cg->identifiers, cg->strings, &scope->tc,
 			"Expected Lvalue at %l\n",
-			&var.debug.debug_info
+			&var.com.debug
 		);
 		*err = ERROR_UNEXPECTED_DATA;
 		goto RET;
@@ -1733,7 +1826,7 @@ RET_FAIL:
 
 static void gen_block(
 	CodeGen *cg,
-	const AstNode *block,
+	size_t block,
 	WyrtBlock *be_block,
 	WyrtFunction fn,
 	Type ret_type,
@@ -1744,7 +1837,7 @@ static void gen_block(
 
 static void gen_if(
 	CodeGen *cg,
-	const AstNode *statement,
+	size_t index,
 	WyrtBlock *be_block,
 	WyrtFunction fn,
 	Type ret_type,
@@ -1757,18 +1850,27 @@ static void gen_if(
 	scope_init(&new, parent, err);
 	if(*err) goto RET;
 
-	WyrtRvalue cond;
-	if(statement->if_statement.decl) {
+	AstNode statement = cg->nodes[index];
+
+	Expr cond;
+	if(statement.if_statement.decl) {
 		new.var_count += 1;
 		new.vars = realloc(new.vars, sizeof(Var) * sizeof(new.var_count));
 		CHECK_MALLOC(new.vars);
 		new.be_vars = realloc(new.be_vars, sizeof(WyrtLvalue) * sizeof(new.var_count));
 		CHECK_MALLOC(new.be_vars);
 
-		AstNode decl = cg->nodes[statement->if_statement.decl];
+		size_t decl_index = index + statement.if_statement.decl;
+		AstNode decl = cg->nodes[decl_index];
+		assert(decl.type == AST_VAR_DECL);
 		new.vars[new.var_count - 1] = (Var) {
 			.id = decl.var_decl.id,
-			.type = type_from_ast(&parent->tc, cg->nodes, decl.var_decl.data_type, err),
+			.type = type_from_ast(
+				&parent->tc,
+				cg->nodes,
+				decl_index + decl.var_decl.data_type,
+				err
+			),
 			.mut = decl.var_decl.mut,
 			.declared = true,
 		};
@@ -1776,7 +1878,7 @@ static void gen_if(
 
 		new.be_vars[new.var_count - 1] = cg->be.block_new_variable(
 			cg->ctx,
-			&decl.debug.debug_info,
+			&decl.com.debug,
 			*be_block,
 			new.vars[new.var_count - 1].type,
 			&parent->tc,
@@ -1789,18 +1891,24 @@ static void gen_if(
 			wyrt_diag(
 				stderr, cg->identifiers, cg->strings, &parent->tc,
 				"Declaration in if-statement not initialized at %l\n",
-				&decl.debug.debug_info
+				&decl.com.debug
 			);
 			*err = ERROR_UNEXPECTED_DATA;
 			goto RET;
 		}
 
-		Expr init = gen_expr(cg, new.vars[new.var_count - 1].type, decl.var_decl.initial, parent, err);
+		Expr init = gen_expr(
+			cg,
+			new.vars[new.var_count - 1].type,
+			index + statement.if_statement.decl + decl.var_decl.initial,
+			parent,
+			err
+		);
 		if(*err) goto RET;
 
 		cg->be.block_add_assign(
 			cg->ctx,
-			&decl.debug.debug_info,
+			&decl.com.debug,
 			*be_block,
 			new.be_vars[new.var_count - 1],
 			init.expr,
@@ -1808,14 +1916,38 @@ static void gen_if(
 		);
 		if(*err) goto RET;
 	
-		if(!statement->if_statement.condition) {
-			cond = cg->be.rvalue_from_lvalue(new.be_vars[new.var_count - 1]);
+		if(!statement.if_statement.condition) {
+			cond.expr = cg->be.rvalue_from_lvalue(new.be_vars[new.var_count - 1]);
+			cond.type = new.vars[new.var_count - 1].type;
 		} else {
-			cond = gen_expr(cg, (Type) {TYPE_NONE}, statement->if_statement.condition, &new, err).expr;
+			cond = gen_expr(
+				cg,
+				(Type) {TYPE_NONE},
+				index + statement.if_statement.condition,
+				&new,
+				err
+			);
 			if(*err) goto RET;
 		}
 	} else {
-		cond = gen_expr(cg, (Type) {TYPE_NONE}, statement->if_statement.condition, &new, err).expr;
+		cond = gen_expr(
+			cg,
+			(Type) {TYPE_NONE},
+			index + statement.if_statement.condition,
+			&new,
+			err
+		);
+		if(*err) goto RET;
+	}
+	if(!types_are_compatible(&parent->tc, cond.type, (Type) { TYPE_PRIMITIVE_BOOL })) {
+		wyrt_diag(
+			stderr, cg->identifiers, cg->strings, &parent->tc,
+			"Cannot coerce value of type '%t' into 'bool' at %l\n",
+			cond.type,
+			&statement.com.debug
+		);
+		*err = ERROR_UNEXPECTED_DATA;
+		goto RET;
 	}
 
 	WyrtBlock true_block = cg->be.new_block(cg->ctx, fn, err);
@@ -1824,15 +1956,15 @@ static void gen_if(
 	WyrtBlock after = cg->be.new_block(cg->ctx, fn, err);
 	if(*err) goto RET;
 
-	if(statement->if_statement.else_block) {
+	if(statement.if_statement.else_block) {
 		WyrtBlock else_block = cg->be.new_block(cg->ctx, fn, err);
 		if(*err) goto RET;
 
 		cg->be.block_end_with_cond(
 			cg->ctx,
-			&statement->debug.debug_info,
+			&statement.com.debug,
 			*be_block,
-			cond,
+			cond.expr,
 			true_block,
 			else_block,
 			err
@@ -1840,17 +1972,35 @@ static void gen_if(
 		if(*err) goto RET;
 		
 		bool true_returns = false;
-		gen_block(cg, &cg->nodes[statement->if_statement.block], &true_block, fn, ret_type, &true_returns, &new, err);
+		gen_block(
+			cg,
+			index + statement.if_statement.block,
+			&true_block,
+			fn,
+			ret_type,
+			&true_returns,
+			&new,
+			err
+		);
 		if(*err) goto RET;
 
 		bool false_returns = false;
-		gen_block(cg, &cg->nodes[statement->if_statement.else_block], &else_block, fn, ret_type, &false_returns, &new, err);
+		gen_block(
+			cg,
+			index + statement.if_statement.else_block,
+			&else_block,
+			fn,
+			ret_type,
+			&false_returns,
+			&new,
+			err
+		);
 		if(*err) goto RET;
 
 		if(!true_returns) {
 			cg->be.block_end_with_jump(
 				cg->ctx,
-				&statement->debug.debug_info,
+				&statement.com.debug,
 				true_block,
 				after,
 				err
@@ -1861,7 +2011,7 @@ static void gen_if(
 		if(!false_returns) {
 			cg->be.block_end_with_jump(
 				cg->ctx,
-				&statement->debug.debug_info,
+				&statement.com.debug,
 				else_block,
 				after,
 				err
@@ -1873,21 +2023,30 @@ static void gen_if(
 	} else {
 		cg->be.block_end_with_cond(
 			cg->ctx,
-			&statement->debug.debug_info,
+			&statement.com.debug,
 			*be_block,
-			cond,
+			cond.expr,
 			true_block,
 			after,
 			err
 		);
 		if(*err) goto RET;
 
-		gen_block(cg, &cg->nodes[statement->if_statement.block], &true_block, fn, ret_type, returned, &new, err);
+		gen_block(
+			cg,
+			index + statement.if_statement.block,
+			&true_block,
+			fn,
+			ret_type,
+			returned,
+			&new,
+			err
+		);
 		if(*err) goto RET;
 
 		cg->be.block_end_with_jump(
 			cg->ctx,
-			&statement->debug.debug_info,
+			&statement.com.debug,
 			true_block,
 			after,
 			err
@@ -1904,7 +2063,7 @@ RET:
 
 static void gen_block(
 	CodeGen *cg,
-	const AstNode *block,
+	size_t index,
 	WyrtBlock *be_block,
 	WyrtFunction fn,
 	Type ret_type,
@@ -1919,15 +2078,19 @@ static void gen_block(
 	DynArr vars;
 	dynarr_init(&vars, sizeof(Var));
 
+	AstNode block = cg->nodes[index];
+
 	scope_init(&scope, parent, err);
 	if(*err) goto RET;
 
-	for(size_t i = 0; i < block->block.statement_count; i++) {
-		const AstNode statement = cg->nodes[block->block.statements[i]];
+	size_t statement_index = index + block.block.statements;
+	bool has_next;
+	do {
+		AstNode statement = cg->nodes[statement_index];
 
 		if(statement.type == AST_VAR_DECL) {
 			Var var;
-			WyrtLvalue be_var = gen_var_decl(cg, &statement, *be_block, &var, &scope, err);
+			WyrtLvalue be_var = gen_var_decl(cg, statement_index, *be_block, &var, &scope, err);
 			if(*err) {
 				dynarr_clean(&vars);
 				dynarr_clean(&be_vars);
@@ -1948,25 +2111,41 @@ static void gen_block(
 				goto RET;
 			}
 		}
-	}
+
+		has_next = cg->nodes[statement_index].com.next != 0;
+		statement_index += statement.com.next;
+	} while(has_next);
 
 	if(vars.count > 0) {
-		scope.be_vars = realloc(scope.be_vars, sizeof(WyrtLvalue) * (scope.var_count + be_vars.count));
+		scope.be_vars = realloc(
+			scope.be_vars,
+			sizeof(WyrtLvalue) * (scope.var_count + be_vars.count)
+		);
 		CHECK_MALLOC(scope.be_vars);
 		scope.vars = realloc(scope.vars, sizeof(Var) * (scope.var_count + vars.count));
 		CHECK_MALLOC(scope.vars);
-		memcpy(scope.be_vars + scope.var_count * sizeof(WyrtLvalue), be_vars.data, sizeof(WyrtLvalue) * be_vars.count);
-		memcpy(scope.vars + scope.var_count * sizeof(Var), vars.data, sizeof(Var) * vars.count);
+		memcpy(
+			scope.be_vars + scope.var_count * sizeof(WyrtLvalue),
+			be_vars.data,
+			sizeof(WyrtLvalue) * be_vars.count
+		);
+		memcpy(
+			scope.vars + scope.var_count * sizeof(Var),
+			vars.data,
+			sizeof(Var) * vars.count
+		);
 		scope.var_count = scope.var_count + vars.count;
 	}
 
 	size_t varnum = 0;
-	for(size_t i = 0; i < block->block.statement_count; i++) {
-		const AstNode statement = cg->nodes[block->block.statements[i]];
+	statement_index = index + block.block.statements;
+	has_next = !!block.block.statements;
+	while (has_next) {
+		AstNode statement = cg->nodes[statement_index];
 
 		switch(statement.type) {
 		case AST_IF: {
-			gen_if(cg, &statement, be_block, fn, ret_type, returned, &scope, err);
+			gen_if(cg, statement_index, be_block, fn, ret_type, returned, &scope, err);
 			if(*err) goto RET;
 		} break;
 
@@ -1974,7 +2153,7 @@ static void gen_block(
 			Expr expr = gen_expr(
 				cg,
 				(Type) {.type = TYPE_NONE},
-				statement.discard.value,
+				statement_index + statement.discard.value,
 				&scope,
 				err
 			);
@@ -1982,7 +2161,7 @@ static void gen_block(
 						
 			cg->be.block_add_eval(
 				cg->ctx,
-				&statement.debug.debug_info,
+				&statement.com.debug,
 				*be_block,
 				expr.expr,
 				err
@@ -2000,16 +2179,16 @@ static void gen_block(
 							"Cannot implicitly discard return value of function '%i' at %l, "
 							"Consider using the 'discard' keyword\n",
 							statement.fn_call.fn_id,
-							&statement.debug.debug_info
+							&statement.com.debug
 						);
 						*err = ERROR_UNEXPECTED_DATA;
 						goto RET;
 					}
-					Expr val = gen_fn_call(cg, statement, &scope, err);
+					Expr val = gen_fn_call(cg, statement_index, &scope, err);
 					if(*err) goto RET;
 					cg->be.block_add_eval(
 						cg->ctx,
-						&statement.debug.debug_info,
+						&statement.com.debug,
 						*be_block,
 						val.expr,
 						err
@@ -2026,7 +2205,7 @@ static void gen_block(
 				stderr, cg->identifiers, cg->strings, &scope.tc,
 				"Undeclared Function '%i' at %l\n",
 				statement.fn_call.fn_id,
-				&statement.debug.debug_info
+				&statement.com.debug
 			);
 			*err = ERROR_UNEXPECTED_DATA;
 			goto RET;
@@ -2037,7 +2216,7 @@ static void gen_block(
 				Expr expr = gen_expr(
 					cg,
 					scope.vars[varnum].type,
-					statement.var_decl.initial,
+					statement_index + statement.var_decl.initial,
 					&scope,
 					err
 				);
@@ -2045,7 +2224,7 @@ static void gen_block(
 
 				cg->be.block_add_assign(
 					cg->ctx,
-					&statement.debug.debug_info,
+					&statement.com.debug,
 					*be_block,
 					scope.be_vars[varnum],
 					expr.expr,
@@ -2055,7 +2234,7 @@ static void gen_block(
 			} else {
 				if(!scope.vars[varnum].mut) {
 					fprintf(stderr, "Error: const Variable uninitialized at ");
-					lexer_print_debug_to_file(stderr, &statement.debug.debug_info);
+					lexer_print_debug_to_file(stderr, &statement.com.debug);
 					fprintf(stderr, "\n");
 					*err = ERROR_UNDEFINED; // Prevent malformed program
 					goto RET;
@@ -2068,7 +2247,7 @@ static void gen_block(
 		case AST_ASSIGN: {
 			Lvalue lhs = gen_lvalue(
 				cg,
-				statement.assign.var,
+				statement_index + statement.assign.var,
 				&scope,
 				err
 			);
@@ -2078,7 +2257,7 @@ static void gen_block(
 				wyrt_diag(
 					stderr, cg->identifiers, cg->strings, &scope.tc,
 					"Cannot assign to const value at %l\n",
-					&statement.debug.debug_info
+					&statement.com.debug
 				);
 				*err = ERROR_UNEXPECTED_DATA;
 				goto RET;
@@ -2087,7 +2266,7 @@ static void gen_block(
 			Expr rhs = gen_expr(
 				cg,
 				lhs.type,
-				statement.assign.expr,
+				statement_index + statement.assign.expr,
 				&scope,
 				err
 			);
@@ -2095,7 +2274,7 @@ static void gen_block(
 
 			cg->be.block_add_assign(
 				cg->ctx,
-				&statement.debug.debug_info,
+				&statement.com.debug,
 				*be_block,
 				lhs.lvalue,
 				rhs.expr,
@@ -2110,7 +2289,7 @@ static void gen_block(
 		case AST_DIV_ASSIGN: {
 			Lvalue lhs = gen_lvalue(
 				cg,
-				statement.assign.var,
+				statement_index + statement.assign.var,
 				&scope,
 				err
 			);
@@ -2120,7 +2299,7 @@ static void gen_block(
 				wyrt_diag(
 					stderr, cg->identifiers, cg->strings, &scope.tc,
 					"Cannot Perform Compound Assignment on non-'var' Value at %l\n",
-					&statement.debug.debug_info
+					&statement.com.debug
 				);
 				*err = ERROR_UNEXPECTED_DATA;
 				goto RET;
@@ -2129,7 +2308,7 @@ static void gen_block(
 			Expr rhs = gen_expr(
 				cg,
 				lhs.type,
-				statement.assign.expr,
+				statement_index + statement.assign.expr,
 				&scope,
 				err
 			);
@@ -2137,7 +2316,7 @@ static void gen_block(
 
 			cg->be.block_add_compound_assign(
 				cg->ctx,
-				&statement.debug.debug_info,
+				&statement.com.debug,
 				*be_block,
 				lhs.lvalue,
 				rhs.expr,
@@ -2152,7 +2331,7 @@ static void gen_block(
 			if(ret_type.type == TYPE_PRIMITIVE_VOID) {
 				if(statement.ret.return_val) {
 					fprintf(stderr, "Cannot Return a Value from a void function at ");
-					lexer_print_debug_to_file(stderr, &statement.debug.debug_info);
+					lexer_print_debug_to_file(stderr, &statement.com.debug);
 					fprintf(stderr, "\n");
 					*err = ERROR_UNEXPECTED_DATA;
 					goto RET;
@@ -2160,19 +2339,25 @@ static void gen_block(
 
 				cg->be.block_end_with_return(
 					cg->ctx,
-					&statement.debug.debug_info,
+					&statement.com.debug,
 					*be_block,
 					NULL,
 					err
 				);
 				if(*err) goto RET;
 			} else {
-				Expr val = gen_expr(cg, ret_type, statement.ret.return_val, &scope, err);
+				Expr val = gen_expr(
+					cg,
+					ret_type,
+					statement_index + statement.ret.return_val,
+					&scope,
+					err
+				);
 				if(*err) goto RET;
 
 				cg->be.block_end_with_return(
 					cg->ctx,
-					&statement.debug.debug_info,
+					&statement.com.debug,
 					*be_block,
 					val.expr,
 					err
@@ -2183,11 +2368,13 @@ static void gen_block(
 
 		default:
 			fprintf(stderr, "Invalid Statement at ");
-			lexer_print_debug_to_file(stderr, &statement.debug.debug_info);
+			lexer_print_debug_to_file(stderr, &statement.com.debug);
 			fprintf(stderr, "\n");
 			*err = ERROR_UNEXPECTED_DATA;
 			goto RET;
 		}
+		has_next = cg->nodes[statement_index].com.next != 0;
+		statement_index += cg->nodes[statement_index].com.next;
 	}
 
 RET:
@@ -2197,13 +2384,20 @@ RET:
 	return;
 }
 
-static void gen_fn(CodeGen *cg, FnSig sig, size_t index, WyrtFunction fn, const Scope *global, Error *err)
+static void gen_fn(
+	CodeGen *cg,
+	FnSig sig,
+	size_t index,
+	WyrtFunction fn,
+	const Scope *global,
+	Error *err
+)
 {
 	const AstNode def = cg->nodes[index];
 	assert(def.type == AST_FN_DEF);
 	
-	const AstNode block = cg->nodes[def.fn_def.block];
-	if(block.type == AST_EXTERN) return;
+	size_t block_index = index + def.fn_def.block;
+	if(cg->nodes[block_index].type == AST_EXTERN) return;
 	
 	DynArr be_vars;
 	DynArr vars;
@@ -2220,7 +2414,7 @@ static void gen_fn(CodeGen *cg, FnSig sig, size_t index, WyrtFunction fn, const 
 	CHECK_MALLOC(scope.params);
 	scope.param_count = sig.arg_count;
 
-	assert(block.type == AST_BLOCK);
+	assert(cg->nodes[block_index].type == AST_BLOCK);
 
 	size_t additional = 0;
 	for(size_t i = 0; i < sig.arg_count; i++) {
@@ -2313,7 +2507,7 @@ static void gen_fn(CodeGen *cg, FnSig sig, size_t index, WyrtFunction fn, const 
 
 	bool returned = false;
 
-	gen_block(cg, &block, &be_block, fn, sig.ret, &returned, &scope, err);
+	gen_block(cg, block_index, &be_block, fn, sig.ret, &returned, &scope, err);
 	if(*err) goto RET;
 
 	if(!returned) {
@@ -2356,13 +2550,14 @@ void codegen_gen(CodeGen *cg, GenOptions options, const char *path, Error *err)
 	
 	const AstNode module = cg->nodes[0];
 
-	for(size_t i = 0; i < module.module.statement_count; i++) {
-		size_t index = module.module.statements[i];
+	size_t index = module.module.statements;
+	bool has_next;
+	do {
 		if(cg->nodes[index].type == AST_TYPEDEF) {
 			Type backing = type_from_ast(
 				&global.tc,
 				cg->nodes,
-				cg->nodes[index].typdef.backing,
+				index + cg->nodes[index].typdef.backing,
 				err
 			);
 			if(*err) goto RET;
@@ -2380,7 +2575,7 @@ void codegen_gen(CodeGen *cg, GenOptions options, const char *path, Error *err)
 						wyrt_diag(
 							stderr, cg->identifiers, cg->strings, &global.tc,
 							"Cannot create Duplicate Typedef at %l\n",
-							&cg->nodes[index].debug.debug_info
+							&cg->nodes[index].com.debug
 						);
 						*err = ERROR_UNEXPECTED_DATA;
 						goto RET;
@@ -2401,10 +2596,12 @@ void codegen_gen(CodeGen *cg, GenOptions options, const char *path, Error *err)
 			types_register(&global.tc, t, err);
 			if(*err) goto RET;
 		}
-	}
+		has_next = cg->nodes[index].com.next != 0;
+		index += cg->nodes[index].com.next;
+	} while(has_next);
 
-	for(size_t i = 0; i < module.module.statement_count; i++) {
-		size_t index = module.module.statements[i];
+	index = module.module.statements;
+	do {
 		if(cg->nodes[index].type == AST_FN_DEF) {
 			dynarr_alloc(&sigs, 1, err);
 			if(*err) {
@@ -2428,14 +2625,16 @@ void codegen_gen(CodeGen *cg, GenOptions options, const char *path, Error *err)
 				goto RET;
 			}
 		}	
-	}
+		has_next = cg->nodes[index].com.next != 0;
+		index += cg->nodes[index].com.next;
+	} while(has_next);
 	cg->fn_sigs = sigs.data;
 	cg->fns = fns.data;
 	cg->fn_count = sigs.count;
 
 	size_t fnnum = 0;
-	for(size_t i = 0; i < module.module.statement_count; i++) {
-		size_t index = module.module.statements[i];
+	index = module.module.statements;
+	do {
 		switch(cg->nodes[index].type) {
 		case AST_FN_DEF:
 			gen_fn(cg, cg->fn_sigs[fnnum], index, cg->fns[fnnum], &global, err);
@@ -2448,12 +2647,14 @@ void codegen_gen(CodeGen *cg, GenOptions options, const char *path, Error *err)
 
 		default:
 			fprintf(stderr, "Illegal File-Scope Statement at ");
-			lexer_print_debug_to_file(stderr, &cg->nodes[i].debug.debug_info);
+			lexer_print_debug_to_file(stderr, &cg->nodes[index].com.debug);
 			fprintf(stderr, "\n");
 			*err = ERROR_UNEXPECTED_DATA;
 			goto RET;
 		}
-	}
+		has_next = cg->nodes[index].com.next != 0;
+		index += cg->nodes[index].com.next;
+	} while(has_next);
 
 	cg->be.compile(cg->ctx, options, path, err);
 	if(*err) goto RET;

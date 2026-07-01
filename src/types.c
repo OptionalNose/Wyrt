@@ -86,11 +86,11 @@ size_t types_register_nexist(TypeContext *tc, Type t, Error *err)
 Type type_from_ast(TypeContext *tc, AstNode const *nodes, size_t i, Error *err)
 {
 	Type t = { 0 };
-	AstNode const *node = &nodes[i];
-	switch(node->type) {
+	AstNode node = nodes[i];
+	switch(node.type) {
 	case AST_IDENT:
 		do {} while(0);
-		Id id = node->ident.id;
+		Id id = node.ident.id;
 		switch(id) {
 		case ID_BUILTIN_U8:
 			t = (Type) { .type = TYPE_PRIMITIVE_U8 };
@@ -134,7 +134,7 @@ Type type_from_ast(TypeContext *tc, AstNode const *nodes, size_t i, Error *err)
 			}
 			if(index == SIZE_MAX) {
 				fprintf(stderr, "Identifier is not a Type at ");
-				lexer_print_debug_to_file(stderr, &node->debug.debug_info);
+				lexer_print_debug_to_file(stderr, &node.com.debug);
 				fprintf(stderr, "\n");
 				*err = ERROR_UNEXPECTED_DATA;
 				goto RET;
@@ -148,13 +148,13 @@ Type type_from_ast(TypeContext *tc, AstNode const *nodes, size_t i, Error *err)
 	case AST_POINTER_VAR:
 	case AST_POINTER_ABYSS:
 		do {} while(0);
-		Type targ_type = type_from_ast(tc, nodes, node->pointer_type.base_type, err);
+		Type targ_type = type_from_ast(tc, nodes, i + node.pointer_type.base_type, err);
 		if(*err) goto RET;
 		size_t index = types_register_nexist(tc, targ_type, err);
 		if(*err) goto RET;
 
 		TypeType ptr_type; 
-		switch(node->type) {
+		switch(node.type) {
 		default:
 		case AST_POINTER_CONST:
 			ptr_type = TYPE_POINTER_CONST;
@@ -184,7 +184,7 @@ Type type_from_ast(TypeContext *tc, AstNode const *nodes, size_t i, Error *err)
 
 	case AST_ARRAY:
 		do {} while(0);
-		Type base_type = type_from_ast(tc, nodes, node->array.elem_type, err);
+		Type base_type = type_from_ast(tc, nodes, i + node.array.elem_type, err);
 		if(*err) goto RET;
 		index = types_register_nexist(tc, base_type, err);
 		if(*err) goto RET;
@@ -193,7 +193,7 @@ Type type_from_ast(TypeContext *tc, AstNode const *nodes, size_t i, Error *err)
 			.array = {
 				.type = TYPE_ARRAY,
 				.base = index,
-				.len = node->array.len,
+				.len = node.array.len,
 			},
 		};
 		break;
@@ -202,12 +202,12 @@ Type type_from_ast(TypeContext *tc, AstNode const *nodes, size_t i, Error *err)
 	case AST_SLICE_VAR:
 	case AST_SLICE_ABYSS:
 		do {} while(0);
-		Type slice_type = type_from_ast(tc, nodes, node->pointer_type.base_type, err);
+		Type slice_type = type_from_ast(tc, nodes, i + node.pointer_type.base_type, err);
 		if(*err) goto RET;
 		index = types_register_nexist(tc, slice_type, err);
 		if(*err) goto RET;
 
-		switch(node->type) {
+		switch(node.type) {
 		default:
 		case AST_SLICE_CONST:
 			ptr_type = TYPE_SLICE_CONST;
@@ -231,29 +231,33 @@ Type type_from_ast(TypeContext *tc, AstNode const *nodes, size_t i, Error *err)
 	case AST_STRUCT_TYPE:
 		do {} while(0);
 		t.type = TYPE_STRUCT;
-		t.struct_type.member_count = node->struct_type.member_count;
+		t.struct_type.member_count = node.struct_type.member_count;
 		t.struct_type.member_types = malloc(t.struct_type.member_count * sizeof(size_t));
 		CHECK_MALLOC(t.struct_type.member_types);
-		t.struct_type.member_name_ids = malloc(t.struct_type.member_count * sizeof(size_t));
+		t.struct_type.member_name_ids = malloc(t.struct_type.member_count * sizeof(Id));
 		CHECK_MALLOC(t.struct_type.member_name_ids);
 
-		for(size_t i = 0; i < node->struct_type.member_count; i++) {
-			Type member_type = type_from_ast(tc, nodes, node->struct_type.member_types[i], err);
+		size_t name_index = i + node.struct_type.member_names;
+		size_t type_index = i + node.struct_type.member_types;
+		for(size_t i = 0; i < node.struct_type.member_count; i++) {
+			Type member_type = type_from_ast(tc, nodes, type_index, err);
 			if(*err) goto RET;	
 
 			index = types_register_nexist(tc, member_type, err);
 			if(*err) goto RET;
 
 			t.struct_type.member_types[i] = index;
-			t.struct_type.member_name_ids[i] = node->struct_type
-				.member_name_ids[i];
-		}
+			assert(nodes[name_index].type == AST_IDENT);
+			t.struct_type.member_name_ids[i] = nodes[name_index].ident.id;
 
+			name_index += nodes[name_index].com.next;
+			type_index += nodes[type_index].com.next;
+		}
 		break;
 
 	default:
 		fprintf(stderr, "Invalid Type at ");
-		lexer_print_debug_to_file(stderr, &node->debug.debug_info);
+		lexer_print_debug_to_file(stderr, &node.com.debug);
 		fprintf(stderr, "\n");
 		*err = ERROR_UNEXPECTED_DATA;
 		goto RET;

@@ -2,16 +2,21 @@
 
 #include "lexer.h"
 
+// Relative Offset
+// 'next' field for chains: 0 == end
+typedef int16_t Offset;
+
 typedef enum {
 	AST_NONE,
 	AST_MODULE,
 	AST_FN_DEF,
 	AST_FN_TYPE,
 	AST_IDENT,
-	AST_BLOCK,
 	AST_RET,
 	AST_INT_LIT,
 	AST_CHAR_LIT,
+
+	AST_BLOCK,
 
 	AST_MUL,
 	AST_DIV,
@@ -71,201 +76,174 @@ typedef enum {
 	AST_IF
 } AstNodeType;
 
+typedef struct {
+	AstNodeType type;
+	DebugInfo debug;
+	Offset next;
+} AstNodeCommon;
+
 typedef union {
 	AstNodeType type;
+	AstNodeCommon com;
 
 	struct {
-		AstNodeType type;
-		DebugInfo debug_info;
-	} debug;
-
-	struct {
-		AstNodeType type;
-		DebugInfo debug_info;
-		size_t ident;
-		size_t fn_type;
-		size_t block;
+		AstNodeCommon com;
+		Id id;
+		Offset fn_type;
+		Offset block;
 	} fn_def;
 
 	struct {
-		AstNodeType type;
-		DebugInfo debug_info;
-		size_t *args; // (arg, type)
-		size_t arg_count;
-		size_t ret_type;
+		AstNodeCommon com;
+		Offset args;
+		Offset ret_type;
+		uint8_t arg_count; // Fast Checking of signature
 	} fn_type;
 
 	struct {
-		AstNodeType type;
-		DebugInfo debug_info;
-		size_t *statements;
-		size_t statement_count;
-	} block;
-
-	struct {
-		AstNodeType type;
-		DebugInfo debug_info;
-		size_t return_val;
+		AstNodeCommon com;
+		Offset return_val;
 	} ret;
 
 	struct {
-		AstNodeType type;
-		DebugInfo debug_info;
+		AstNodeCommon com;
 		intmax_t val;
 	} int_lit;
 
 	struct {
-		AstNodeType type;
-		DebugInfo debug_info;
+		AstNodeCommon com;
 		Id id;
 	} ident;
 
 	struct {
-		AstNodeType type;
-		DebugInfo debug_info;
-		size_t *statements;
-		size_t statement_count;
+		AstNodeCommon com;
+		Offset statements;
 	} module;
 
 	struct {
-		AstNodeType type;
-		DebugInfo debug_info;
-		size_t lhs;
-		size_t rhs;
+		AstNodeCommon com;
+		Offset statements;
+	} block;
+
+	struct {
+		AstNodeCommon com;
+		Offset lhs;
+		Offset rhs;
 	} binop;
 
 	struct {
-		AstNodeType type;
-		DebugInfo debug_info;
-		bool mut;
+		AstNodeCommon com;
 		Id id;
-		size_t data_type;
-		size_t initial; // 0 == none
+		Offset data_type;
+		Offset initial;
+		bool mut;
 	} var_decl;
 
 	struct {
-		AstNodeType type;
-		DebugInfo debug_info;
+		AstNodeCommon com;
 		Id fn_id;
-		size_t arg_count;
-		size_t *args;
+		Offset args;
+		uint8_t arg_count; // Fast Signature Checking
 	} fn_call;
 
 	struct {
-		AstNodeType type;
-		DebugInfo debug_info;
-		size_t var;
-		size_t expr;
+		AstNodeCommon com;
+		Offset var;
+		Offset expr;
 	} assign;
 
 	struct {
-		AstNodeType type;
-		DebugInfo debug_info;
-		size_t val;
+		AstNodeCommon com;
+		Offset val;
 	} unary_op;
 
 	struct {
-		AstNodeType type;
-		DebugInfo debug_info;
-		size_t base_type;
+		AstNodeCommon com;
+		Offset base_type;
 	} pointer_type;
 
 	struct {
-		AstNodeType type;
-		DebugInfo debug_info;
-		size_t elem_type;
-		size_t len; //0 == _
+		AstNodeCommon com;
+		Offset elem_type;
+		size_t len;
 	} array;
 
 	struct {
-		AstNodeType type;
-		DebugInfo debug_info;
-		size_t elem_type;
+		AstNodeCommon com;
+		Offset elem_type;
 	} slice;
 
 	struct {
-		AstNodeType type;
-		DebugInfo debug_info;
-		size_t arr;
-		size_t index;
+		AstNodeCommon com;
+		Offset arr;
+		Offset index;
 	} subscript;
 
 	struct {
-		AstNodeType type;
-		DebugInfo debug_info;
-		size_t elem_count;
-		size_t *elems;
+		AstNodeCommon com;
+		Offset elems;
+		uint32_t elem_count; // Fast Type Checking
 	} array_lit;
 
 	struct {
-		AstNodeType type;
-		DebugInfo debug_info;
-		size_t member_count;
-		Id *member_name_ids;
-		size_t *member_types;
+		AstNodeCommon com;
+		Offset member_names;
+		Offset member_types;
+		uint8_t member_count; // Fast Type Checking
 	} struct_type;
 
 	struct {
-		AstNodeType type;
-		DebugInfo debug_info;
+		AstNodeCommon com;
 		Id parent_id; // 0 == anonymous
-		size_t member_count;
-		size_t *member_name_ids;
-		size_t *member_values;
+		Offset member_names;
+		Offset member_values;
+		uint8_t member_count; // Fast Type Checking
 	} struct_lit;
 
 	struct {
-		AstNodeType type;
-		DebugInfo debug_info;
-		size_t parent;
+		AstNodeCommon com;
 		Id member_id;
+		Offset parent;
 	} struct_access;
 
 	struct {
-		AstNodeType type;
-		DebugInfo debug_info;
+		AstNodeCommon com;
 		size_t id;
 	} string_lit;
 
 	struct {
-		AstNodeType type;
-		DebugInfo debug_info;
-		size_t name;
+		AstNodeCommon com;
+		Offset name;
 	} extrn;
 
 	struct {
-		AstNodeType type;
-		DebugInfo debug_info;
-		size_t value;
+		AstNodeCommon com;
+		Offset value;
 	} discard;
 
 	struct {
-		AstNodeType type;
-		DebugInfo debug_info;
-		size_t parent;
-		size_t member;
+		AstNodeCommon com;
+		Offset parent;
+		Offset member;
 	} arrow;
 
 	struct {
-		AstNodeType type;
-		DebugInfo debug_info;
+		AstNodeCommon com;
 		Id id;
-		size_t backing;
+		Offset backing;
 	} typdef;
 
 	struct {
-		AstNodeType type;
-		DebugInfo debug_info;
+		AstNodeCommon com;
 		char val;
 	} char_lit;
 
 	struct {
-		AstNodeType type;
-		DebugInfo debug_info;
-		size_t decl; // 0 == None
-		size_t condition;
-		size_t block;
-		size_t else_block;
+		AstNodeCommon com;
+		Offset decl; // 0 == None
+		Offset condition; // 0 == None
+		Offset block;
+		Offset else_block;
 	} if_statement;
 } AstNode;
 
@@ -278,7 +256,6 @@ typedef struct {
 void nodelist_alloc(NodeList *list, size_t n, Error *err);
 void nodelist_push(NodeList *list, AstNode node, Error *err);
 AstNode nodelist_pop(NodeList *list);
-void nodelist_clean(NodeList *list);
 
 #define PARSE_STATE_LIST \
 	X(MODULE) \

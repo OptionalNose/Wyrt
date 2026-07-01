@@ -92,103 +92,14 @@ void parser_init(
 
 void parser_clean(Parser *prs)
 {
-	nodelist_clean(&prs->ast);
+	free(prs->ast.nodes);
 	free(prs->parse_stack.state);
-}
-
-void nodelist_clean(NodeList *list)
-{
-	for(size_t i = 0; i < list->len; i++) {
-		if(list->nodes[i].type > AST_IF) {
-			fprintf(stderr, "Corrupted AST\n");
-			continue;
-		} 
-
-		switch(list->nodes[i].type) {
-		case AST_FN_TYPE:
-			free(list->nodes[i].fn_type.args);
-			break;
-
-		case AST_BLOCK:
-			free(list->nodes[i].block.statements);
-			break;
-
-		case AST_MODULE:
-			free(list->nodes[i].module.statements);
-			break;
-
-		case AST_FN_CALL:
-			free(list->nodes[i].fn_call.args);
-			break;
-
-		case AST_ARRAY_LIT:
-			free(list->nodes[i].array_lit.elems);
-			break;
-
-		case AST_STRUCT_TYPE:
-			free(list->nodes[i].struct_type.member_name_ids);
-			free(list->nodes[i].struct_type.member_types);
-			break;
-
-		case AST_STRUCT_LIT:
-			free(list->nodes[i].struct_lit.member_name_ids);
-			free(list->nodes[i].struct_lit.member_values);
-			break;
-
-		case AST_NONE:
-		case AST_FN_DEF:
-		case AST_IDENT:
-		case AST_RET:
-		case AST_INT_LIT:
-		case AST_MUL:
-		case AST_DIV:
-		case AST_ADD:
-		case AST_SUB:
-		case AST_VAR_DECL:
-		case AST_ASSIGN:
-		case AST_ADD_ASSIGN:
-		case AST_SUB_ASSIGN:
-		case AST_MUL_ASSIGN:
-		case AST_DIV_ASSIGN:
-		case AST_ADDR:
-		case AST_POINTER_CONST:
-		case AST_POINTER_VAR:
-		case AST_POINTER_ABYSS:
-		case AST_DEREF:
-		case AST_ARRAY:
-		case AST_SLICE_CONST:
-		case AST_SLICE_VAR:
-		case AST_SLICE_ABYSS:
-		case AST_SUBSCRIPT:
-		case AST_STRUCT_ACCESS:
-		case AST_EXTERN:
-		case AST_STRING_LIT:
-		case AST_ZSTRING_LIT:
-		case AST_CSTRING_LIT:
-		case AST_DISCARD:
-		case AST_ARROW:
-		case AST_TYPEDEF:
-		case AST_CHAR_LIT:
-		case AST_COMP_EQ:
-		case AST_COMP_GE:
-		case AST_COMP_LE:
-		case AST_COMP_NE:
-		case AST_COMP_GT:
-		case AST_COMP_LT:
-		case AST_LOGIC_AND:
-		case AST_LOGIC_OR:
-		case AST_LOGIC_NOT:
-		case AST_IF:
-			break;
-		}
-	}
-	free(list->nodes);
 }
 
 void parser_print_ast(Parser *prs, FILE *file)
 {
 	for(size_t i = 0; i < prs->ast.len; i++) {
-		fprintf(file, "%zi:\t", i);
+		fprintf(file, "%zi(->%zi):\t", i, i + prs->ast.nodes[i].com.next);
 		switch(prs->ast.nodes[i].type) {
 		case AST_NONE:
 			fprintf(file, "NONE");
@@ -197,191 +108,212 @@ void parser_print_ast(Parser *prs, FILE *file)
 		case AST_FN_DEF:
 			fprintf(
 				file,
-				"FN_DEF '%zi': %zi { %zi }",
-				prs->ast.nodes[i].fn_def.ident,
-				prs->ast.nodes[i].fn_def.fn_type,
-				prs->ast.nodes[i].fn_def.block
+				"FN_DEF '%s': %zi { %zi }",
+				id_get(prs->identifiers, prs->ast.nodes[i].fn_def.id),
+				i + prs->ast.nodes[i].fn_def.fn_type,
+				i + prs->ast.nodes[i].fn_def.block
 			);
 			break;
 
 		case AST_FN_TYPE:
-			fprintf(file, "(");
-			for(size_t j = 0; j < prs->ast.nodes[i].fn_type.arg_count; j++) {
-				fprintf(
-					file,
-					"%zi: %zi, ",
-					prs->ast.nodes[i].fn_type.args[2 * j], prs->ast.nodes[i].fn_type.args[2 * j + 1]
-				);
-			}
-			fprintf(file, ") -> %zi", prs->ast.nodes[i].fn_type.ret_type);
-			break;
-			
-		case AST_BLOCK:
-			fprintf(file, "{");
-			for(size_t j = 0; j < prs->ast.nodes[i].block.statement_count; j++) {
-				fprintf(
-					file,
-					"%zi, ",
-					prs->ast.nodes[i].block.statements[j]
-				);
-			}
-			fprintf(file, "}");
+			fprintf(
+				file,
+				"(%zi...) -> %zi",
+				i + prs->ast.nodes[i].fn_type.args,
+				i + prs->ast.nodes[i].fn_type.ret_type
+			);
 			break;
 			
 		case AST_RET:
-			fprintf(file, "return %zi", prs->ast.nodes[i].ret.return_val);
+			fprintf(
+				file,
+				"return %zi",
+				i + prs->ast.nodes[i].ret.return_val
+			);
 			break;
-			
 		case AST_INT_LIT:
 			fprintf(file, "%ji", prs->ast.nodes[i].int_lit.val);
 			break;
-			
+		case AST_BLOCK:
+			fprintf(file, "%zi;...", i + prs->ast.nodes[i].block.statements); 
+			break;
 		case AST_IDENT:
 			fprintf(file, "'%s'", id_get(prs->identifiers, prs->ast.nodes[i].ident.id));
 			break;  
-			
 		case AST_MODULE:
-			fprintf(file, "MODULE[");
-			for(size_t j = 0; j < prs->ast.nodes[i].module.statement_count; j++) {
-				fprintf(
-					file,
-					"%zi, ",
-					prs->ast.nodes[i].module.statements[j]
-				);
-			}
-			fprintf(file, "]");
+			fprintf(
+				file,
+				"MODULE[%zi...]",
+				i + prs->ast.nodes[i].module.statements
+			);
 			break;
+
 		case AST_MUL:
-			fprintf(file, "%zi * %zi", prs->ast.nodes[i].binop.lhs, prs->ast.nodes[i].binop.rhs);
+			fprintf(
+				file,
+				"%zi * %zi",
+				i + prs->ast.nodes[i].binop.lhs,
+				i + prs->ast.nodes[i].binop.rhs
+			);
 			break;
 		case AST_ADD:
-			fprintf(file, "%zi + %zi", prs->ast.nodes[i].binop.lhs, prs->ast.nodes[i].binop.rhs);
+			fprintf(
+				file,
+				"%zi + %zi",
+				i + prs->ast.nodes[i].binop.lhs,
+				i + prs->ast.nodes[i].binop.rhs
+			);
 			break;
 		case AST_DIV:
-			fprintf(file, "%zi / %zi", prs->ast.nodes[i].binop.lhs, prs->ast.nodes[i].binop.rhs);
+			fprintf(
+				file,
+				"%zi / %zi",
+				i + prs->ast.nodes[i].binop.lhs,
+				i + prs->ast.nodes[i].binop.rhs
+			);
 			break;
 		case AST_SUB:
-			fprintf(file, "%zi - %zi", prs->ast.nodes[i].binop.lhs, prs->ast.nodes[i].binop.rhs);
+			fprintf(
+				file,
+				"%zi - %zi",
+				i + prs->ast.nodes[i].binop.lhs,
+				i + prs->ast.nodes[i].binop.rhs
+			);
 			break;
 
 		case AST_VAR_DECL:
 			fprintf(
 				file,
-				"%s '%s': %ji [= %ji]", 
+				"%s '%s': %zi [= %zi]", 
 				prs->ast.nodes[i].var_decl.mut ? "var" : "const",
 				id_get(prs->identifiers, prs->ast.nodes[i].var_decl.id),
-				prs->ast.nodes[i].var_decl.data_type,
-				prs->ast.nodes[i].var_decl.initial
+				i + prs->ast.nodes[i].var_decl.data_type,
+				i + prs->ast.nodes[i].var_decl.initial
 			);
 			break;
 
 		case AST_FN_CALL:
-			fprintf(file, "%s(", id_get(prs->identifiers, prs->ast.nodes[i].fn_call.fn_id));
-			for(size_t j = 0; j < prs->ast.nodes[i].fn_call.arg_count; j++) {
-				fprintf(file, "%ji, ", prs->ast.nodes[i].fn_call.args[j]);
-			}
-			fprintf(file, ")");
+			fprintf(
+				file,
+				"%s(%zi...)",
+				id_get(prs->identifiers, prs->ast.nodes[i].fn_call.fn_id),
+				prs->ast.nodes[i].fn_call.args + i
+			);
 			break;
 
 		case AST_ASSIGN:
-			fprintf(file, "%zi = %zi", prs->ast.nodes[i].assign.var, prs->ast.nodes[i].assign.expr);
+			fprintf(
+				file,
+				"%zi = %zi",
+				i + prs->ast.nodes[i].assign.var,
+				i + prs->ast.nodes[i].assign.expr
+			);
 			break;
-
 		case AST_ADD_ASSIGN:
-			fprintf(file, "%zi += %zi", prs->ast.nodes[i].assign.var, prs->ast.nodes[i].assign.expr);
+			fprintf(
+				file,
+				"%zi += %zi",
+				i + prs->ast.nodes[i].assign.var,
+				i + prs->ast.nodes[i].assign.expr
+			);
 			break;
-
 		case AST_SUB_ASSIGN:
-			fprintf(file, "%zi -= %zi", prs->ast.nodes[i].assign.var, prs->ast.nodes[i].assign.expr);
+			fprintf(
+				file,
+				"%zi -= %zi",
+				i + prs->ast.nodes[i].assign.var,
+				i + prs->ast.nodes[i].assign.expr
+			);
 			break;
-
 		case AST_MUL_ASSIGN:
-			fprintf(file, "%zi *= %zi", prs->ast.nodes[i].assign.var, prs->ast.nodes[i].assign.expr);
+			fprintf(
+				file,
+				"%zi *= %zi",
+				i + prs->ast.nodes[i].assign.var,
+				i + prs->ast.nodes[i].assign.expr
+			);
 			break;
-
 		case AST_DIV_ASSIGN:
-			fprintf(file, "%zi /= %zi", prs->ast.nodes[i].assign.var, prs->ast.nodes[i].assign.expr);
+			fprintf(
+				file,
+				"%zi /= %zi",
+				i + prs->ast.nodes[i].assign.var,
+				i + prs->ast.nodes[i].assign.expr
+			);
 			break;
 
 		case AST_ADDR:
-			fprintf(file, "&%zi", prs->ast.nodes[i].unary_op.val);
+			fprintf(file, "&%zi", i + prs->ast.nodes[i].unary_op.val);
 			break;
-		
 		case AST_POINTER_CONST:
-			fprintf(file, "&const %zi", prs->ast.nodes[i].pointer_type.base_type);
+			fprintf(file, "&const %zi", i + prs->ast.nodes[i].pointer_type.base_type);
 			break;
-
 		case AST_POINTER_VAR:
-			fprintf(file, "&var %zi", prs->ast.nodes[i].pointer_type.base_type);
+			fprintf(file, "&var %zi", i + prs->ast.nodes[i].pointer_type.base_type);
 			break;
-
 		case AST_POINTER_ABYSS:
-			fprintf(file, "&abyss %zi", prs->ast.nodes[i].pointer_type.base_type);
+			fprintf(file, "&abyss %zi", i + prs->ast.nodes[i].pointer_type.base_type);
 			break;
-
 		case AST_DEREF:
-			fprintf(file, "*%zi", prs->ast.nodes[i].unary_op.val);
+			fprintf(file, "*%zi", i + prs->ast.nodes[i].unary_op.val);
 			break;
-
 		case AST_ARRAY:
-			fprintf(file, "[%zi]%zi", prs->ast.nodes[i].array.len, prs->ast.nodes[i].array.elem_type);
+			fprintf(
+				file,
+				"[%zi]%zi",
+				prs->ast.nodes[i].array.len,
+				i + prs->ast.nodes[i].array.elem_type
+			);
 			break;
-
 		case AST_SLICE_CONST:
-			fprintf(file, "[]const %zi", prs->ast.nodes[i].slice.elem_type);
+			fprintf(file, "[]const %zi", i + prs->ast.nodes[i].slice.elem_type);
 			break;
-
 		case AST_SLICE_VAR:
-			fprintf(file, "[]var %zi", prs->ast.nodes[i].slice.elem_type);
+			fprintf(file, "[]var %zi", i + prs->ast.nodes[i].slice.elem_type);
 			break;
-
 		case AST_SLICE_ABYSS:
-			fprintf(file, "[]abyss %zi", prs->ast.nodes[i].slice.elem_type);
+			fprintf(file, "[]abyss %zi", i + prs->ast.nodes[i].slice.elem_type);
 			break;
-
 		case AST_SUBSCRIPT:
-			fprintf(file, "%zi[%zi]", prs->ast.nodes[i].subscript.arr, prs->ast.nodes[i].subscript.index);
+			fprintf(
+				file,
+				"%zi[%zi]",
+				i + prs->ast.nodes[i].subscript.arr,
+				i + prs->ast.nodes[i].subscript.index
+			);
 			break;
 
 		case AST_ARRAY_LIT:
-			fprintf(file, "{");
-			for(size_t j = 0; j < prs->ast.nodes[i].array_lit.elem_count; j++) {
-				fprintf(file, "%zi, ", prs->ast.nodes[i].array_lit.elems[j]);
-			}
-			fprintf(file, "}");
+			fprintf(
+				file,
+				"{%zi...}",
+				i + prs->ast.nodes[i].array_lit.elems
+			);
 			break;
-
 		case AST_STRUCT_TYPE:
-			fprintf(file, "struct {");
-			for(size_t j = 0; j < prs->ast.nodes[i].struct_type.member_count; j++) {
-				fprintf(
-					file,
-					"%s: %zi, ",
-					id_get(prs->identifiers, prs->ast.nodes[i].struct_type.member_name_ids[j]),
-					prs->ast.nodes[i].struct_type.member_types[j]
-				);
-			}
-			fprintf(file, "}");
+			fprintf(
+				file,
+				"struct {%zi: %zi...}",
+				i + prs->ast.nodes[i].struct_type.member_names,
+				i + prs->ast.nodes[i].struct_type.member_types
+			);
 			break;
-
 		case AST_STRUCT_LIT:
-			fprintf(file, "(struct) {");
-			for(size_t j = 0; j < prs->ast.nodes[i].struct_lit.member_count; j++) {
-				fprintf(
-					file,
-					".%s = %zi, ",
-					id_get(prs->identifiers, prs->ast.nodes[i].struct_lit.member_name_ids[j]),
-					prs->ast.nodes[i].struct_lit.member_values[j]
-				);
-			}
-			fprintf(file, "}");
+			fprintf(
+				file,
+				"(struct) '%s' {%zi: %zi...}",
+				prs->ast.nodes[i].struct_lit.parent_id
+					? id_get(prs->identifiers, prs->ast.nodes[i].struct_lit.parent_id)
+					: "_",
+				i + prs->ast.nodes[i].struct_lit.member_names,
+				i + prs->ast.nodes[i].struct_lit.member_values
+			);
 			break;
-
 		case AST_STRUCT_ACCESS:
 			fprintf(
 				file,
 				"%zi.%s",
-				prs->ast.nodes[i].struct_access.parent,
+				i + prs->ast.nodes[i].struct_access.parent,
 				id_get(prs->identifiers, prs->ast.nodes[i].struct_access.member_id)
 			);
 			break;
@@ -411,22 +343,22 @@ void parser_print_ast(Parser *prs, FILE *file)
 			fprintf(
 				file,
 				"#extern(%zi)",
-				prs->ast.nodes[i].extrn.name
+				i + prs->ast.nodes[i].extrn.name
 			);
 			break;
 		case AST_DISCARD:
 			fprintf(
 				file,
 				"discard %zi",
-				prs->ast.nodes[i].discard.value
+				i + prs->ast.nodes[i].discard.value
 			);
 			break;
 		case AST_ARROW:
 			fprintf(
 				file,
 				"%zi -> %zi",
-				prs->ast.nodes[i].arrow.parent,
-				prs->ast.nodes[i].arrow.member
+				i + prs->ast.nodes[i].arrow.parent,
+				i + prs->ast.nodes[i].arrow.member
 			);
 			break;
 		case AST_TYPEDEF:
@@ -434,7 +366,7 @@ void parser_print_ast(Parser *prs, FILE *file)
 				file,
 				"typedef \"%s\" = %zi",
 				id_get(prs->identifiers, prs->ast.nodes[i].typdef.id),
-				prs->ast.nodes[i].typdef.backing
+				i + prs->ast.nodes[i].typdef.backing
 			);
 			break;
 		case AST_CHAR_LIT:
@@ -445,40 +377,80 @@ void parser_print_ast(Parser *prs, FILE *file)
 			);
 			break;
 		case AST_COMP_EQ:
-			fprintf(file, "%zi == %zi", prs->ast.nodes[i].binop.lhs, prs->ast.nodes[i].binop.rhs);
+			fprintf(
+				file,
+				"%zi == %zi",
+				i + prs->ast.nodes[i].binop.lhs,
+				i + prs->ast.nodes[i].binop.rhs
+			);
 			break;
 		case AST_COMP_GE:
-			fprintf(file, "%zi >= %zi", prs->ast.nodes[i].binop.lhs, prs->ast.nodes[i].binop.rhs);
+			fprintf(
+				file,
+				"%zi >= %zi",
+				i + prs->ast.nodes[i].binop.lhs,
+				i + prs->ast.nodes[i].binop.rhs
+			);
 			break;
 		case AST_COMP_LE:
-			fprintf(file, "%zi <= %zi", prs->ast.nodes[i].binop.lhs, prs->ast.nodes[i].binop.rhs);
+			fprintf(
+				file,
+				"%zi <= %zi",
+				i + prs->ast.nodes[i].binop.lhs,
+				i + prs->ast.nodes[i].binop.rhs
+			);
 			break;
 		case AST_COMP_NE:
-			fprintf(file, "%zi != %zi", prs->ast.nodes[i].binop.lhs, prs->ast.nodes[i].binop.rhs);
+			fprintf(
+				file,
+				"%zi != %zi",
+				i + prs->ast.nodes[i].binop.lhs,
+				i + prs->ast.nodes[i].binop.rhs
+			);
 			break;
 		case AST_COMP_GT:
-			fprintf(file, "%zi > %zi", prs->ast.nodes[i].binop.lhs, prs->ast.nodes[i].binop.rhs);
+			fprintf(
+				file,
+				"%zi > %zi",
+				i + prs->ast.nodes[i].binop.lhs,
+				i + prs->ast.nodes[i].binop.rhs
+			);
 			break;
 		case AST_COMP_LT:
-			fprintf(file, "%zi < %zi", prs->ast.nodes[i].binop.lhs, prs->ast.nodes[i].binop.rhs);
+			fprintf(
+				file,
+				"%zi < %zi",
+				i + prs->ast.nodes[i].binop.lhs,
+				i + prs->ast.nodes[i].binop.rhs
+			);
 			break;
 		case AST_LOGIC_AND:
-			fprintf(file, "%zi && %zi", prs->ast.nodes[i].binop.lhs, prs->ast.nodes[i].binop.rhs);
+			fprintf(
+				file,
+				"%zi && %zi",
+				i + prs->ast.nodes[i].binop.lhs,
+				i + prs->ast.nodes[i].binop.rhs
+			);
 			break;
 		case AST_LOGIC_OR:
-			fprintf(file, "%zi || %zi", prs->ast.nodes[i].binop.lhs, prs->ast.nodes[i].binop.rhs);
+			fprintf(
+				file,
+				"%zi || %zi",
+				i + prs->ast.nodes[i].binop.lhs,
+				i + prs->ast.nodes[i].binop.rhs
+			);
 			break;
 		case AST_LOGIC_NOT:
-			fprintf(file, "!%zi", prs->ast.nodes[i].unary_op.val);
+			fprintf(file, "!%zi", i + prs->ast.nodes[i].unary_op.val);
 			break;
 		case AST_IF:
 			fprintf(
 				file,
 				"if(%zi; %zi) {%zi} else {%zi}\n",
-				prs->ast.nodes[i].if_statement.decl,
-				prs->ast.nodes[i].if_statement.condition,
-				prs->ast.nodes[i].if_statement.block,
-				prs->ast.nodes[i].if_statement.else_block
+				i + prs->ast.nodes[i].if_statement.decl,
+				i + prs->ast.nodes[i].if_statement.condition,
+				i + prs->ast.nodes[i].if_statement.block,
+				i + prs->ast.nodes[i].if_statement.else_block
 			);
 			break;
 		}
@@ -488,10 +460,27 @@ void parser_print_ast(Parser *prs, FILE *file)
 
 static void handle_MODULE(Parser *prs, size_t *index, Error *err)
 {
+	if(prs->tokens[*index].type == TOKEN_EOF) {
+		parsestack_pop(&prs->parse_stack);
+		goto RET;
+	}
+
+	{
+		AstNode *last_statement = &prs->ast.nodes[parsestack_top(&prs->parse_stack)->ref];
+		if(last_statement->module.statements) {
+			last_statement += last_statement->module.statements;
+			while(last_statement->com.next) {
+				last_statement += last_statement->com.next;
+			}
+			last_statement->com.next = prs->ast.len - (last_statement - prs->ast.nodes);
+		} else {
+			last_statement->module.statements = 1; // First Statement
+		}
+	}
+
+	const DebugInfo debug = prs->tokens[*index].debug.debug_info;
 	switch(prs->tokens[*index].type) {
 	case TOKEN_TYPEDEF: {
-		const DebugInfo debug = prs->tokens[*index].debug.debug_info;
-
 		*index += 1;
 
 		if(prs->tokens[*index].type != TOKEN_IDENT) {
@@ -521,20 +510,11 @@ static void handle_MODULE(Parser *prs, size_t *index, Error *err)
 		nodelist_alloc(&prs->ast, 2, err);
 		if(*err) goto RET;
 
-		AstNode *module = &prs->ast.nodes[parsestack_top(&prs->parse_stack)->ref];
-		module->module.statements = realloc(
-			module->module.statements,
-			sizeof(size_t) * ++module->module.statement_count
-		);
-		CHECK_MALLOC(module->module.statements);
-		module->module.statements[module->module.statement_count - 1] = prs->ast.len - 2;
-
 		prs->ast.nodes[prs->ast.len - 2] = (AstNode) {
 			.typdef = {
-				.type = AST_TYPEDEF,
-				.debug_info = debug,
+				.com = {AST_TYPEDEF, debug},
 				.id = id,
-				.backing = prs->ast.len - 1,
+				.backing = 1,
 			},
 		};
 
@@ -545,29 +525,38 @@ static void handle_MODULE(Parser *prs, size_t *index, Error *err)
 	} break;
 
 	case TOKEN_FN: {
+		*index += 1;
+
+		if(prs->tokens[*index].type != TOKEN_IDENT) {
+			wyrt_diag(
+				stderr, prs->identifiers, prs->strings, NULL,
+				"Expected identifier after fn, found %T\n",
+				&prs->tokens[*index]
+			);
+			*err = ERROR_UNEXPECTED_DATA;
+			goto RET;
+		}
+		Id id = prs->tokens[*index].ident.id;
+
 		nodelist_push(
 			&prs->ast,
 			(AstNode) {
-				.type = AST_FN_DEF,
+				.fn_def = {
+					.com = {AST_FN_DEF, debug},
+					.id = id,
+				},
 			},
 			err
 		);
 		if(*err) goto RET;
 
-		AstNode *module = &prs->ast.nodes[parsestack_top(&prs->parse_stack)->ref];
-		module->module.statements = realloc(
-			module->module.statements, sizeof(size_t) * ++module->module.statement_count
+		parsestack_push(
+			&prs->parse_stack,
+			(ParseState) {PARSE_STATE_FN_DEF, prs->ast.len - 1},
+			err
 		);
-		CHECK_MALLOC(module->module.statements);
-		module->module.statements[module->module.statement_count - 1] = prs->ast.len - 1;
-
-		parsestack_push(&prs->parse_stack, (ParseState) {PARSE_STATE_FN_DEF, prs->ast.len - 1}, err);
 		if(*err) goto RET;
 	} break;
-
-	case TOKEN_EOF:
-		parsestack_pop(&prs->parse_stack);
-		break;
 
 	default:
 		wyrt_diag(
@@ -586,26 +575,22 @@ RET:
 static void handle_FN_DEF(Parser *prs, size_t *index, Error *err)
 {
 	AstNode *fn = &prs->ast.nodes[parsestack_pop(&prs->parse_stack).ref];
-	fn->fn_def.debug_info = prs->tokens[*index].debug.debug_info;
-	fn->fn_def.ident = prs->ast.len + 2;
-	fn->fn_def.fn_type = prs->ast.len + 1;
-	fn->fn_def.block = prs->ast.len;
+	fn->fn_def.fn_type = 1;
+	fn->fn_def.block = 2;
 
-	parsestack_alloc(&prs->parse_stack, 3, err);
+	parsestack_alloc(&prs->parse_stack, 2, err);
 	if(*err) goto RET;
-	nodelist_alloc(&prs->ast, 3, err);
+	nodelist_alloc(&prs->ast, 2, err);
 	if(*err) goto RET;
 
 	size_t ast_end = prs->ast.len - 1;
 	size_t ps_end = prs->parse_stack.len - 1;
 	
-	prs->parse_stack.state[ps_end  ] = (ParseState) {PARSE_STATE_IDENT,		ast_end};
-	prs->parse_stack.state[ps_end-1] = (ParseState) {PARSE_STATE_FN_TYPE,	ast_end-1};
-	prs->parse_stack.state[ps_end-2] = (ParseState) {PARSE_STATE_FN_BODY,	ast_end-2};
+	prs->parse_stack.state[ps_end  ] = (ParseState) {PARSE_STATE_FN_TYPE,	ast_end-1};
+	prs->parse_stack.state[ps_end-1] = (ParseState) {PARSE_STATE_FN_BODY,	ast_end  };
 
-	prs->ast.nodes[ast_end  ] = (AstNode) {.ident = {AST_IDENT}};
-	prs->ast.nodes[ast_end-1] = (AstNode) {.fn_type = {AST_FN_TYPE}};
-	prs->ast.nodes[ast_end-2] = (AstNode) {.block = {AST_BLOCK}};
+	prs->ast.nodes[ast_end] = (AstNode) {.fn_type = {{AST_FN_TYPE}}};
+	prs->ast.nodes[ast_end-1] = (AstNode) {.block = {{AST_BLOCK}}};
 
 RET:
 	return;
@@ -625,8 +610,7 @@ static void handle_IDENT(Parser *prs, size_t *index, Error *err)
 
 	prs->ast.nodes[parsestack_pop(&prs->parse_stack).ref] = (AstNode) {
 		.ident = {
-			.type = AST_IDENT,
-			.debug_info = prs->tokens[*index].debug.debug_info,
+			.com = {AST_IDENT, prs->tokens[*index].debug.debug_info},
 			.id = prs->tokens[*index].ident.id,
 		},
 	};
@@ -653,8 +637,8 @@ static void handle_FN_TYPE(Parser *prs, size_t *index, Error *err)
 	size_t ref = parsestack_pop(&prs->parse_stack).ref;
 	prs->ast.nodes[ref] = (AstNode) {
 		.fn_type = {
-			.type = AST_FN_TYPE,
-			.args = NULL,
+			.com = {AST_FN_TYPE, prs->tokens[*index-1].debug.debug_info},
+			.args = 0,
 			.arg_count = 0,
 			.ret_type = 0,
 		},
@@ -677,27 +661,34 @@ static void handle_FN_TYPE_LIST(Parser *prs, size_t *index, Error *err)
 		goto RET;
 	}
 
-	AstNode *fn_type = &prs->ast.nodes[parsestack_top(&prs->parse_stack)->ref];
-	
-	if(fn_type->fn_type.args && prs->tokens[(*index)++].type != TOKEN_COMMA) {
-		wyrt_diag(
-			stderr, prs->identifiers, prs->strings, NULL,
-			"Expected ',' after Function Argument, found %T\n",
-			&prs->tokens[*index - 1]
-		);
-		*err = ERROR_UNEXPECTED_DATA;
-		goto RET;
-	}
-	
-	size_t new_count = ++(fn_type->fn_type.arg_count);
+	{
+		AstNode *fn_type = &prs->ast.nodes[parsestack_top(&prs->parse_stack)->ref];
+		
+		if(fn_type->fn_type.args && prs->tokens[(*index)++].type != TOKEN_COMMA) {
+			wyrt_diag(
+				stderr, prs->identifiers, prs->strings, NULL,
+				"Expected ',' after Function Argument, found %T\n",
+				&prs->tokens[*index - 1]
+			);
+			*err = ERROR_UNEXPECTED_DATA;
+			goto RET;
+		}
+		
+		fn_type->fn_type.arg_count += 1;
 
-	fn_type->fn_type.args = realloc(fn_type->fn_type.args, 2 * sizeof(size_t) * new_count);
-	CHECK_MALLOC(fn_type->fn_type.args);
+		if(fn_type->fn_type.args) {
+			fn_type += fn_type->fn_type.args;
+			while(fn_type->com.next) {
+				fn_type += fn_type->fn_type.com.next;
+			}
+			fn_type->com.next = prs->ast.len - (fn_type - prs->ast.nodes);
+		} else {
+			fn_type->fn_type.args = prs->ast.len - (fn_type - prs->ast.nodes);	
+		}
+	}
 
 	nodelist_alloc(&prs->ast, 1, err);
 	if(*err) goto RET;
-
-	fn_type->fn_type.args[new_count * 2 - 2] = prs->ast.len - 1;
 
 	parsestack_push(
 		&prs->parse_stack,
@@ -724,15 +715,20 @@ static void handle_FN_TYPE_ARG(Parser *prs, size_t *index, Error *err)
 		*err = ERROR_UNEXPECTED_DATA;
 		goto RET;
 	}
-
 	*index += 1;
+
+	{
+		AstNode *fn_type = &prs->ast.nodes[parsestack_pop(&prs->parse_stack).ref];
+		fn_type += fn_type->fn_type.args; // At least one element in list
+		while(fn_type->com.next) {
+			fn_type += fn_type->com.next;
+		}
+		fn_type->com.next = prs->ast.len - (fn_type - prs->ast.nodes);
+	}
 
 	nodelist_alloc(&prs->ast, 1, err);
 	if(*err) goto RET;
-
-	AstNode *fn_type = &prs->ast.nodes[parsestack_pop(&prs->parse_stack).ref];
-	fn_type->fn_type.args[fn_type->fn_type.arg_count * 2 - 1] = prs->ast.len - 1;
-
+	
 	parsestack_push(&prs->parse_stack, (ParseState) {PARSE_STATE_TYPE, prs->ast.len - 1}, err);
 	if(*err) goto RET;
 
@@ -742,10 +738,11 @@ RET:
 
 static void handle_FN_TYPE_RET(Parser *prs, size_t *index, Error *err)
 {
+	AstNode *fn_type = &prs->ast.nodes[parsestack_pop(&prs->parse_stack).ref];
+	fn_type->fn_type.ret_type = prs->ast.len - (fn_type - prs->ast.nodes);
+
 	nodelist_alloc(&prs->ast, 1, err);
 	if(*err) goto RET;
-
-	prs->ast.nodes[parsestack_pop(&prs->parse_stack).ref].fn_type.ret_type = prs->ast.len - 1;
 
 	parsestack_push(&prs->parse_stack, (ParseState) {PARSE_STATE_TYPE, prs->ast.len - 1}, err);
 	if(*err) goto RET;
@@ -772,16 +769,19 @@ static void handle_TYPE(Parser *prs, size_t *index, Error *err)
 
 		prs->ast.nodes[ref] = (AstNode) {
 			.struct_type = {
-				.type = AST_STRUCT_TYPE,
-				.debug_info = prs->tokens[*index - 1].debug.debug_info,
+				.com = {AST_STRUCT_TYPE, prs->tokens[*index-1].debug.debug_info},
+				.member_names = 0,
+				.member_types = 0,
 				.member_count = 0,
-				.member_name_ids = NULL,
-				.member_types = NULL,
 			},
 		};
 
 		parsestack_pop(&prs->parse_stack);
-		parsestack_push(&prs->parse_stack, (ParseState) {PARSE_STATE_STRUCT_TYPE, prs->ast.len - 1}, err);
+		parsestack_push(
+			&prs->parse_stack,
+			(ParseState) {PARSE_STATE_STRUCT_TYPE, prs->ast.len - 1},
+			err
+		);
 		if(*err) goto RET;
 		break;
 
@@ -802,9 +802,11 @@ static void handle_TYPE(Parser *prs, size_t *index, Error *err)
 
 		prs->ast.nodes[ref] = (AstNode) {
 			.pointer_type = {
-				.type = AST_POINTER_CONST + prs->tokens[*index].type - TOKEN_CONST,
-				.debug_info = prs->tokens[*index].debug.debug_info,
-				.base_type = prs->ast.len,
+				.com = {
+					AST_POINTER_CONST + prs->tokens[*index].type - TOKEN_CONST,
+					prs->tokens[*index].debug.debug_info,
+				},
+				.base_type = prs->ast.len - ref,
 			},
 		};
 
@@ -833,11 +835,13 @@ static void handle_TYPE(Parser *prs, size_t *index, Error *err)
 				goto RET;
 			}
 
-			prs->ast.nodes[parsestack_pop(&prs->parse_stack).ref] = (AstNode) {
+			prs->ast.nodes[ref] = (AstNode) {
 				.slice = {
-					.type = AST_SLICE_CONST + (prs->tokens[*index].type - TOKEN_CONST),
-					.debug_info = prs->tokens[*index].debug.debug_info,
-					.elem_type = prs->ast.len,
+					.com = {
+						AST_SLICE_CONST + (prs->tokens[*index].type - TOKEN_CONST),
+						prs->tokens[*index].debug.debug_info,
+					},
+					.elem_type = prs->ast.len - ref,
 				},
 			};
 
@@ -846,13 +850,14 @@ static void handle_TYPE(Parser *prs, size_t *index, Error *err)
 			nodelist_alloc(&prs->ast, 1, err);
 			if(*err) goto RET;
 
-			parsestack_push(&prs->parse_stack, (ParseState) {PARSE_STATE_TYPE, prs->ast.len - 1}, err);
-			if(*err) goto RET;
+			parsestack_top(&prs->parse_stack)->ref = prs->ast.len - 1;
 			break;
 
 		case TOKEN_UNDERSCORE:
 		case TOKEN_INT_LIT: {
-			intmax_t len = prs->tokens[*index].type == TOKEN_INT_LIT ? prs->tokens[*index].int_lit.val : 0;
+			intmax_t len = prs->tokens[*index].type == TOKEN_INT_LIT
+				? prs->tokens[*index].int_lit.val 
+				: 0;
 
 			*index += 1;
 
@@ -869,9 +874,11 @@ static void handle_TYPE(Parser *prs, size_t *index, Error *err)
 
 			prs->ast.nodes[parsestack_pop(&prs->parse_stack).ref] = (AstNode) {
 				.array = {
-					.type = AST_ARRAY,
-					.debug_info = prs->tokens[*index].debug.debug_info,
-					.elem_type = prs->ast.len,
+					.com = {
+						AST_ARRAY,
+						prs->tokens[*index].debug.debug_info,
+					},
+					.elem_type = prs->ast.len - ref,
 					.len = len,
 				},
 			};
@@ -879,7 +886,11 @@ static void handle_TYPE(Parser *prs, size_t *index, Error *err)
 			nodelist_alloc(&prs->ast, 1, err);
 			if(*err) goto RET;
 
-			parsestack_push(&prs->parse_stack, (ParseState) {PARSE_STATE_TYPE, prs->ast.len - 1}, err);
+			parsestack_push(
+				&prs->parse_stack,
+				(ParseState) {PARSE_STATE_TYPE, prs->ast.len - 1},
+				err
+			);
 			if(*err) goto RET;
 
 			*index += 1;
@@ -928,8 +939,9 @@ static void handle_BLOCK(Parser *prs, size_t *index, Error *err)
 
 	prs->ast.nodes[parsestack_top(&prs->parse_stack)->ref] = (AstNode) {
 		.block = {
-			.type = AST_BLOCK,
-			.debug_info = prs->tokens[*index].debug.debug_info,
+			.com = {
+				AST_BLOCK, prs->tokens[*index].debug.debug_info
+			},
 		},
 	};
 
@@ -943,36 +955,51 @@ RET:
 
 static void handle_BLOCK_LIST(Parser *prs, size_t *index, Error *err)
 {
-	AstNode *block = &prs->ast.nodes[parsestack_top(&prs->parse_stack)->ref];
-	if(block->block.statements) {
-		if(prs->tokens[*index].type != TOKEN_SEMICOLON) {
-			if(prs->tokens[*index - 1].type != TOKEN_RCURLY) {
-				wyrt_diag(
-					stderr, prs->identifiers, prs->strings, NULL,
-					"Expected ';' after Statement, found %T\n",
-					&prs->tokens[*index]
-				);
-				*err = ERROR_UNEXPECTED_DATA;
+	size_t last_index;
+	{
+		size_t ref = parsestack_top(&prs->parse_stack)->ref;
+		AstNode *statement = &prs->ast.nodes[ref];
+		if(statement->block.statements) {
+			statement += statement->module.statements;
+			while(statement->com.next) {
+				statement += statement->com.next;
+			}
+
+			if(prs->tokens[*index].type != TOKEN_SEMICOLON) {
+				if(prs->tokens[*index - 1].type != TOKEN_RCURLY) {
+					wyrt_diag(
+						stderr, prs->identifiers, prs->strings, NULL,
+						"Expected ';' after Statement, found %T\n",
+						&prs->tokens[*index]
+					);
+					*err = ERROR_UNEXPECTED_DATA;
+					goto RET;
+				}
+			} else {
+				*index += 1;
+			}
+
+			if(prs->tokens[*index].type == TOKEN_RCURLY) {
+				parsestack_pop(&prs->parse_stack);
+				*index += 1;
 				goto RET;
 			}
+
+			statement->com.next = prs->ast.len - (statement - prs->ast.nodes);
 		} else {
-			*index += 1;
+			if(prs->tokens[*index].type == TOKEN_RCURLY) {
+				parsestack_pop(&prs->parse_stack);
+				*index += 1;
+				goto RET;
+			}
+
+			statement->block.statements = prs->ast.len - ref;
 		}
+		last_index = statement - prs->ast.nodes;
 	}
-
-	if(prs->tokens[*index].type == TOKEN_RCURLY) {
-		parsestack_pop(&prs->parse_stack);
-		*index += 1;
-		goto RET;
-	}
-
-	block->block.statements = realloc(
-		block->block.statements, sizeof(size_t) * ++block->block.statement_count
-	);
 
 	switch(prs->tokens[*index].type) {
 	case TOKEN_IF: {
-		block->block.statements[block->block.statement_count - 1] = prs->ast.len;
 		nodelist_alloc(&prs->ast, 1, err);
 		if(*err) goto RET;
 		parsestack_push(&prs->parse_stack, (ParseState) {PARSE_STATE_IF, prs->ast.len - 1}, err);
@@ -980,36 +1007,32 @@ static void handle_BLOCK_LIST(Parser *prs, size_t *index, Error *err)
 	} break;
 
 	case TOKEN_DISCARD: {
-		size_t ref = prs->ast.len + 1;
-		block->block.statements[block->block.statement_count - 1] = ref - 1;
-
 		nodelist_alloc(&prs->ast, 2, err);
 		if(*err) goto RET;
 
-		prs->ast.nodes[ref - 1] = (AstNode) {
+		prs->ast.nodes[prs->ast.len - 2] = (AstNode) {
 			.discard = {
-				.type = AST_DISCARD,
-				.debug_info = prs->tokens[*index].debug.debug_info,
-				.value = ref,	
+				.com = {
+					AST_DISCARD, prs->tokens[*index].debug.debug_info
+				},
+				.value = 1,	
 			},
 		};
 
-		parsestack_push(&prs->parse_stack, (ParseState) {PARSE_STATE_EXPR, ref}, err);
+		parsestack_push(&prs->parse_stack, (ParseState) {PARSE_STATE_EXPR, prs->ast.len - 1}, err);
 		if(*err) goto RET;
 
 		*index += 1;
 	} break;
 	case TOKEN_RETURN: {
-		size_t ref = prs->ast.len + 1;
-		block->block.statements[block->block.statement_count - 1] = ref - 1;
-
 		if(prs->tokens[*index + 1].type == TOKEN_SEMICOLON) {
 			nodelist_push(
 				&prs->ast,
 				(AstNode) {
 					.ret = {
-						.type = AST_RET,
-						.debug_info = prs->tokens[*index].debug.debug_info,
+						.com = {
+							AST_RET, prs->tokens[*index].debug.debug_info
+						},
 						.return_val = 0,
 					},
 				},
@@ -1023,14 +1046,13 @@ static void handle_BLOCK_LIST(Parser *prs, size_t *index, Error *err)
 		nodelist_alloc(&prs->ast, 2, err);
 		if(*err) goto RET;
 
-		prs->ast.nodes[ref-1] = (AstNode) {
+		prs->ast.nodes[prs->ast.len - 2] = (AstNode) {
 			.ret = {
-				.type = AST_RET,
-				.debug_info = prs->tokens[*index].debug.debug_info,
-				.return_val = ref,
+				.com = {AST_RET, prs->tokens[*index].debug.debug_info},
+				.return_val = 1,
 			},
 		};
-		parsestack_push(&prs->parse_stack, (ParseState) {PARSE_STATE_EXPR, ref}, err);
+		parsestack_push(&prs->parse_stack, (ParseState) {PARSE_STATE_EXPR, prs->ast.len - 1}, err);
 		if(*err) goto RET;
 
 		*index += 1;
@@ -1038,10 +1060,13 @@ static void handle_BLOCK_LIST(Parser *prs, size_t *index, Error *err)
 
 	case TOKEN_CONST:
 	case TOKEN_VAR: {
-		block->block.statements[block->block.statement_count - 1] = prs->ast.len;
 		nodelist_alloc(&prs->ast, 1, err);
 		if(*err) goto RET;
-		parsestack_push(&prs->parse_stack, (ParseState) {PARSE_STATE_VAR_DECL, prs->ast.len - 1}, err);
+		parsestack_push(
+			&prs->parse_stack,
+			(ParseState) {PARSE_STATE_VAR_DECL, prs->ast.len - 1},
+			err
+		);
 		if(*err) goto RET;
 	} break;
 
@@ -1050,20 +1075,22 @@ static void handle_BLOCK_LIST(Parser *prs, size_t *index, Error *err)
 			&prs->ast,
 			(AstNode) {
 				.assign = {
-					.type = AST_ASSIGN,
-					.var = prs->ast.len - 1,
+					.com = {AST_ASSIGN},
+					.var = 0,
 				},
 			},	
 			err
 		);
 		if(*err) goto RET;
 
-		parsestack_push(&prs->parse_stack, (ParseState) {PARSE_STATE_ASSIGNMENT, prs->ast.len - 1}, err);
+		parsestack_push(
+			&prs->parse_stack,
+			(ParseState) {PARSE_STATE_ASSIGNMENT, last_index},
+			err
+		);
 		if(*err) goto RET;
 		parsestack_push(&prs->parse_stack, (ParseState) {PARSE_STATE_EXPR, prs->ast.len - 1}, err);
 		if(*err) goto RET;
-
-		block->block.statements[block->block.statement_count - 1] = prs->ast.len - 1;
 	}
 
 RET:
@@ -1074,24 +1101,24 @@ static void handle_IF(Parser *prs, size_t *index, Error *err)
 {
 	size_t ref = parsestack_pop(&prs->parse_stack).ref;
 
+	prs->ast.nodes[ref] = (AstNode) {
+		.if_statement = {
+			.com = {AST_IF, prs->tokens[*index].debug.debug_info},
+			.decl = 0,
+			.condition = 0,
+			.block = prs->ast.len - ref,
+			.else_block = 0,
+		},
+	};
+
 	nodelist_alloc(&prs->ast, 1, err);
 	if(*err) goto RET;
 
 	prs->ast.nodes[prs->ast.len - 1] = (AstNode) {
 		.block = {
-			.type = AST_BLOCK,
-			.statements = NULL,
-			.statement_count = 0,
+			.com = {AST_BLOCK},
+			.statements = 0,
 		}
-	};
-
-	prs->ast.nodes[ref] = (AstNode) {
-		.if_statement = {
-			.type = AST_IF,
-			.debug_info = prs->tokens[*index].debug.debug_info,
-			.block = prs->ast.len - 1,
-			.else_block = 0,
-		},
 	};
 
 	*index += 1;
@@ -1118,22 +1145,20 @@ static void handle_IF(Parser *prs, size_t *index, Error *err)
 	if(prs->tokens[*index].type == TOKEN_CONST
 		|| prs->tokens[*index].type == TOKEN_VAR
 	) {
-		prs->ast.nodes[ref].if_statement.decl = prs->ast.len;
+		prs->ast.nodes[ref].if_statement.decl = prs->ast.len - ref;
 		parsestack_push(&prs->parse_stack, (ParseState) {PARSE_STATE_CONDITION, ref}, err);
 		if(*err) goto RET;
 		parsestack_push(&prs->parse_stack, (ParseState) {PARSE_STATE_SEMICOLON}, err);
 		if(*err) goto RET;
 		parsestack_push(&prs->parse_stack, (ParseState) {PARSE_STATE_VAR_DECL, prs->ast.len}, err);
 		if(*err) goto RET;
-		nodelist_alloc(&prs->ast, 1, err);
-		if(*err) goto RET;
 	} else {
-		nodelist_alloc(&prs->ast, 1, err);
-		if(*err) goto RET;
-		prs->ast.nodes[ref].if_statement.condition = prs->ast.len - 1;
-		parsestack_push(&prs->parse_stack, (ParseState) {PARSE_STATE_EXPR, prs->ast.len - 1}, err);
+		prs->ast.nodes[ref].if_statement.condition = prs->ast.len - ref;
+		parsestack_push(&prs->parse_stack, (ParseState) {PARSE_STATE_EXPR, prs->ast.len}, err);
 		if(*err) goto RET;
 	}
+	nodelist_alloc(&prs->ast, 1, err);
+	if(*err) goto RET;
 
 RET:
 	return;
@@ -1157,11 +1182,10 @@ static void handle_VAR_DECL(Parser *prs, size_t *index, Error *err)
 
 	prs->ast.nodes[ref] = (AstNode) {
 		.var_decl = {
-			.type = AST_VAR_DECL,
-			.debug_info = prs->tokens[*index].debug.debug_info,
+			.com = {AST_VAR_DECL, prs->tokens[*index].debug.debug_info},
 			.mut = prs->tokens[*index - 1].type == TOKEN_VAR,
 			.id =  prs->tokens[*index].ident.id,
-			.data_type = ref + 1,
+			.data_type = prs->ast.len - ref,
 		},
 	};
 
@@ -1179,7 +1203,6 @@ static void handle_VAR_DECL(Parser *prs, size_t *index, Error *err)
 
 	nodelist_alloc(&prs->ast, 1, err);
 	if(*err) goto RET;
-
 
 	parsestack_push(&prs->parse_stack, (ParseState) {PARSE_STATE_VAR_DECL_INIT, ref}, err);
 	if(*err) goto RET;	
@@ -1308,10 +1331,13 @@ static AstNodeType op_to_ast(ExprOpType type)
 	}
 }
 
-static void pop_op(Parser *prs, ExprOp *op, DynArr *free_list, size_t index, Error *err)
+static void pop_op(Parser *prs, ExprOp *op, DynArr *free_list, size_t index, size_t loc, Error *err)
 {
 	size_t *rhs;
 	size_t *lhs;
+
+	if(!loc) loc = prs->ast.len;
+
 	switch(op->type) {
 	case EXPR_LOGIC_NOT:
 	case EXPR_ADDR:
@@ -1331,9 +1357,8 @@ static void pop_op(Parser *prs, ExprOp *op, DynArr *free_list, size_t index, Err
 			&prs->ast,
 			(AstNode) {
 				.unary_op = {
-					.type = op_to_ast(op->type),
-					.debug_info = op->debug,
-					.val = *rhs,
+					.com = {op_to_ast(op->type), op->debug},
+					.val = *rhs - loc
 				},
 			},
 			err
@@ -1379,10 +1404,9 @@ static void pop_op(Parser *prs, ExprOp *op, DynArr *free_list, size_t index, Err
 			&prs->ast,
 			(AstNode) {
 				.binop = {
-					.type = op_to_ast(op->type),
-					.debug_info = op->debug,
-					.lhs = *lhs,
-					.rhs = *rhs,
+					.com = {op_to_ast(op->type), op->debug},
+					.lhs = *lhs - loc,
+					.rhs = *rhs - loc
 				},
 			},
 			err
@@ -1418,7 +1442,7 @@ static void pop_op(Parser *prs, ExprOp *op, DynArr *free_list, size_t index, Err
 			wyrt_diag(
 				stderr, prs->identifiers, prs->strings, NULL,
 				"Expected Identifier for struct access at %l\n",
-				&prs->ast.nodes[*rhs].debug.debug_info
+				&prs->ast.nodes[*rhs].com.debug
 			);
 			*err = ERROR_UNEXPECTED_DATA;
 			goto RET;
@@ -1428,9 +1452,8 @@ static void pop_op(Parser *prs, ExprOp *op, DynArr *free_list, size_t index, Err
 			&prs->ast,
 			(AstNode) {
 				.struct_access = {
-					.type = op_to_ast(op->type),
-					.debug_info = op->debug,
-					.parent = *lhs,
+					.com = {op_to_ast(op->type), op->debug},
+					.parent = *lhs - loc,
 					.member_id = prs->ast.nodes[*rhs].ident.id,
 				},
 			},
@@ -1480,7 +1503,10 @@ static void handle_EXPR(Parser *prs, size_t *index, Error *err)
 			for(size_t i = 0; i < op_stack.count; i++) {
 				ExprOp *op = dynarr_from_back(&op_stack, i);
 
-				if(op->type == EXPR_FN_CALL || op->type == EXPR_ARRAY_LIT || op->type == EXPR_STRUCT_LIT) {
+				if(op->type == EXPR_FN_CALL
+					|| op->type == EXPR_ARRAY_LIT
+					|| op->type == EXPR_STRUCT_LIT
+				) {
 					op->extra += 1;
 					found = true;
 					break;
@@ -1530,23 +1556,24 @@ static void handle_EXPR(Parser *prs, size_t *index, Error *err)
 				if(op->type == EXPR_FN_CALL) {
 					AstNode fn_call = {
 						.fn_call = {
-							.type = AST_FN_CALL,
-							.debug_info = op->debug,
+							.com = {AST_FN_CALL, op->debug},
 							.fn_id = op->id,
 						},
 					};
 
 					if(!op->extra && has_prev_op) {
-						fn_call.fn_call.args = NULL;
+						fn_call.fn_call.args = 0;
 						fn_call.fn_call.arg_count = 0;
 					} else {
 						fn_call.fn_call.arg_count = op->extra + 1;
-						fn_call.fn_call.args = malloc((1 + op->extra) * sizeof(size_t));
+						fn_call.fn_call.args = *(size_t*)dynarr_from_back(&free_list, op->extra)
+							- prs->ast.len;
 
-						CHECK_MALLOC(fn_call.fn_call.args);
-
-						for(size_t i = 0; i < op->extra + 1; i++) {
-							fn_call.fn_call.args[op->extra - i] = *(size_t*)dynarr_from_back(&free_list, i);
+						AstNode *arg = &prs->ast.nodes[fn_call.fn_call.args + prs->ast.len];
+						for(size_t i = 1; i < op->extra + 1; i++) {
+							arg->com.next = *(size_t*)dynarr_from_back(&free_list, op->extra - i)
+								- (arg - prs->ast.nodes);
+							arg += arg->com.next;
 						}
 						free_list.count -= op->extra + 1;
 					}
@@ -1558,7 +1585,8 @@ static void handle_EXPR(Parser *prs, size_t *index, Error *err)
 					break;
 				}
 
-				pop_op(prs, op, &free_list, *index, err);
+				size_t loc = op_stack.count == 0 ? ref : 0;
+				pop_op(prs, op, &free_list, *index, loc, err);
 				if(*err) goto RET;
 			} while(true);
 			has_prev_op = false;
@@ -1582,14 +1610,11 @@ static void handle_EXPR(Parser *prs, size_t *index, Error *err)
 				if(op->type == EXPR_ARRAY_LIT) {
 					AstNode array_lit = {
 						.array_lit = {
-							.type = AST_ARRAY_LIT,
-							.debug_info = op->debug,
+							.com = {AST_ARRAY_LIT, op->debug},
 							.elem_count = op->extra + 1,
-							.elems = malloc((1 + op->extra) * sizeof(size_t)),
+							.elems = 0,
 						},
 					};
-
-					CHECK_MALLOC(array_lit.array_lit.elems);
 
 					if(free_list.count < op->extra + 1) {
 						wyrt_diag(
@@ -1601,8 +1626,13 @@ static void handle_EXPR(Parser *prs, size_t *index, Error *err)
 						goto RET;
 					}
 
-					for(size_t i = 0; i < op->extra + 1; i++) {
-						array_lit.array_lit.elems[op->extra - i] = *(size_t*)dynarr_from_back(&free_list, i);
+					array_lit.array_lit.elems = *(size_t*)dynarr_from_back(&free_list, op->extra)
+						- prs->ast.len;
+					AstNode *elem = &prs->ast.nodes[array_lit.array_lit.elems + prs->ast.len];
+					for(size_t i = 1; i < op->extra + 1; i++) {
+						elem->com.next = *(size_t*)dynarr_from_back(&free_list, op->extra - i)
+							- (elem - prs->ast.nodes);
+						elem += elem->com.next;
 					}
 					free_list.count -= op->extra + 1;
 
@@ -1614,16 +1644,13 @@ static void handle_EXPR(Parser *prs, size_t *index, Error *err)
 				} else if(op->type == EXPR_STRUCT_LIT) {
 					AstNode struct_lit = {
 						.struct_lit = {
-							.type = AST_STRUCT_LIT,
-							.debug_info = op->debug,
+							.com = {AST_STRUCT_LIT, op->debug},
 							.parent_id = op->id,
 							.member_count = (op->extra + 1) / 2,
-							.member_name_ids = malloc((1 + op->extra) / 2 * sizeof(size_t)),
-							.member_values = malloc((1 + op->extra) / 2* sizeof(size_t)),
+							.member_names = 0,
+							.member_values = 0,
 						},
 					};
-					CHECK_MALLOC(struct_lit.struct_lit.member_name_ids);
-					CHECK_MALLOC(struct_lit.struct_lit.member_values);
 
 					if(free_list.count < op->extra + 1) {
 						wyrt_diag(
@@ -1635,14 +1662,19 @@ static void handle_EXPR(Parser *prs, size_t *index, Error *err)
 						goto RET;
 					}
 
-					for(size_t i = 0; i < op->extra + 1; i += 2) {
-						size_t member = *(size_t*)dynarr_from_back(&free_list, i + 1);
-						size_t value = *(size_t*)dynarr_from_back(&free_list, i);
+					size_t member_idx = *(size_t*)dynarr_from_back(&free_list, 1);
+					size_t value_idx = *(size_t*)dynarr_from_back(&free_list, 0);
+					for(size_t i = 2; i < op->extra + 1; i += 2) {
+						size_t new_member_idx = *(size_t*)dynarr_from_back(&free_list, i + 1);
+						size_t new_value_idx = *(size_t*)dynarr_from_back(&free_list, i);
 
-						struct_lit.struct_lit.member_name_ids[(1 + op->extra)/2 - i/2 - 1] = member;
-						struct_lit.struct_lit.member_values[(1 + op->extra)/2 - i/2 - 1] = value;
+						prs->ast.nodes[new_member_idx].com.next = member_idx - new_member_idx;
+						prs->ast.nodes[new_value_idx].com.next = value_idx - new_value_idx;
+						member_idx = new_member_idx;
+						value_idx = new_value_idx;
 					}
-
+					struct_lit.struct_lit.member_names = member_idx - prs->ast.len;
+					struct_lit.struct_lit.member_values = value_idx - prs->ast.len;
 					free_list.count -= op->extra + 1;
 
 					nodelist_push(&prs->ast, struct_lit, err);
@@ -1651,7 +1683,7 @@ static void handle_EXPR(Parser *prs, size_t *index, Error *err)
 					if(*err) goto RET;
 					break;
 				} else {
-					pop_op(prs, op, &free_list, *index, err);
+					pop_op(prs, op, &free_list, *index, 0, err);
 					if(*err) goto RET;
 				}
 			} while(true);
@@ -1662,7 +1694,7 @@ static void handle_EXPR(Parser *prs, size_t *index, Error *err)
 		case TOKEN_LSQUARE: {
 			ExprOp *top = dynarr_from_back(&op_stack, 0);
 			while(top && (top->type == EXPR_STRUCT_ACCESS || top->type == EXPR_ARROW)) {
-				pop_op(prs, top, &free_list, *index, err);
+				pop_op(prs, top, &free_list, *index, 0, err);
 				op_stack.count -= 1;
 				top = dynarr_from_back(&op_stack, 0);
 				if(*err) goto RET;
@@ -1714,10 +1746,9 @@ static void handle_EXPR(Parser *prs, size_t *index, Error *err)
 						&prs->ast,
 						(AstNode) {
 							.subscript = {
-								.type = AST_SUBSCRIPT,
-								.debug_info = op->debug,
-								.arr = op->extra,
-								.index = *idx,
+								.com = {AST_SUBSCRIPT, op->debug},
+								.arr = op->extra - prs->ast.len,
+								.index = *idx - prs->ast.len,
 							},
 						},
 						err
@@ -1729,7 +1760,7 @@ static void handle_EXPR(Parser *prs, size_t *index, Error *err)
 					break;
 				}
 
-				pop_op(prs, op, &free_list, *index, err);
+				pop_op(prs, op, &free_list, *index, 0, err);
 				if(*err) goto RET;
 			} while(true);
 			*index += 1;
@@ -1743,8 +1774,10 @@ static void handle_EXPR(Parser *prs, size_t *index, Error *err)
 				&prs->ast,
 				(AstNode) {
 					.string_lit = {
-						.type = AST_STRING_LIT + (prs->tokens[*index].type - TOKEN_STRING_LIT),
-						.debug_info = prs->tokens[*index].debug.debug_info,
+						.com = {
+							.type = AST_STRING_LIT + (prs->tokens[*index].type - TOKEN_STRING_LIT),
+							.debug = prs->tokens[*index].debug.debug_info,
+						},
 						.id = prs->tokens[*index].string_lit.id,
 					},
 				},
@@ -1774,8 +1807,7 @@ static void handle_EXPR(Parser *prs, size_t *index, Error *err)
 				&prs->ast,
 				(AstNode) {
 					.int_lit = {
-						.type = AST_INT_LIT,
-						.debug_info = prs->tokens[*index].debug.debug_info,
+						.com = {AST_INT_LIT, prs->tokens[*index].debug.debug_info},
 						.val = prs->tokens[*index].int_lit.val,
 					},
 				},
@@ -1805,8 +1837,7 @@ static void handle_EXPR(Parser *prs, size_t *index, Error *err)
 				&prs->ast,
 				(AstNode) {
 					.int_lit = {
-						.type = AST_CHAR_LIT,
-						.debug_info = prs->tokens[*index].debug.debug_info,
+						.com = {AST_CHAR_LIT, prs->tokens[*index].debug.debug_info},
 						.val = prs->tokens[*index].char_lit.val,
 					},
 				},
@@ -1895,8 +1926,7 @@ static void handle_EXPR(Parser *prs, size_t *index, Error *err)
 					&prs->ast,
 					(AstNode) {
 						.ident = {
-							.type = AST_IDENT,
-							.debug_info = prs->tokens[*index].debug.debug_info,
+							.com = {AST_IDENT, prs->tokens[*index].debug.debug_info},
 							.id = prs->tokens[*index].ident.id,
 						},
 					},
@@ -1926,7 +1956,9 @@ static void handle_EXPR(Parser *prs, size_t *index, Error *err)
 			break;
 
 		case TOKEN_PERIOD:
-			if(prs->tokens[*index - 1].type == TOKEN_COMMA || prs->tokens[*index - 1].type == TOKEN_LCURLY) {
+			if(prs->tokens[*index - 1].type == TOKEN_COMMA
+				|| prs->tokens[*index - 1].type == TOKEN_LCURLY
+			) {
 				*index += 1;
 				if(prs->tokens[*index].type != TOKEN_IDENT) {
 					wyrt_diag(
@@ -1938,7 +1970,17 @@ static void handle_EXPR(Parser *prs, size_t *index, Error *err)
 					goto RET;
 				}
 
-				size_t id = prs->tokens[*index].ident.id;
+				nodelist_push(
+					&prs->ast,
+					(AstNode) {
+						.ident = {
+							.com = {AST_IDENT, prs->tokens[*index].debug.debug_info},
+							.id = prs->tokens[*index].ident.id,
+						},
+					},
+					err
+				);
+				if(*err) goto RET;
 
 				*index += 1;
 
@@ -1954,7 +1996,7 @@ static void handle_EXPR(Parser *prs, size_t *index, Error *err)
 
 				*index += 1;
 
-				dynarr_push(&free_list, &id, err);
+				dynarr_push(&free_list, &(size_t) {prs->ast.len - 1}, err);
 				if(*err) goto RET;
 
 				ExprOp *op = dynarr_from_back(&op_stack, 0);
@@ -2000,7 +2042,7 @@ static void handle_EXPR(Parser *prs, size_t *index, Error *err)
 				if(higher_prec) {
 					ExprOp *op = dynarr_pop(&op_stack);
 
-					pop_op(prs, op, &free_list, *index, err);
+					pop_op(prs, op, &free_list, *index, 0, err);
 					if(*err) goto RET;
 				}				
 			} while(higher_prec);
@@ -2025,7 +2067,8 @@ static void handle_EXPR(Parser *prs, size_t *index, Error *err)
 	while(op_stack.count) {
 		ExprOp *op = dynarr_pop(&op_stack);
 		
-		pop_op(prs, op, &free_list, *index, err);
+		size_t loc = op_stack.count == 0 ? ref : 0;
+		pop_op(prs, op, &free_list, *index, loc, err);
 		if(*err) goto RET;
 	}
 
@@ -2039,6 +2082,23 @@ static void handle_EXPR(Parser *prs, size_t *index, Error *err)
 		goto RET;
 	}
 
+	switch(prs->ast.nodes[prs->ast.len - 1].type) {
+	case AST_FN_CALL:
+		prs->ast.nodes[prs->ast.len - 1].fn_call.args += prs->ast.len - 1 - ref;
+		break;
+	case AST_ARRAY_LIT:
+		prs->ast.nodes[prs->ast.len - 1].array_lit.elems += prs->ast.len - 1 - ref;
+		break;
+	case AST_SUBSCRIPT:
+		prs->ast.nodes[prs->ast.len - 1].subscript.arr += prs->ast.len - 1 - ref;
+		prs->ast.nodes[prs->ast.len - 1].subscript.index += prs->ast.len - 1 - ref;
+		break;
+	case AST_STRUCT_LIT:
+		prs->ast.nodes[prs->ast.len - 1].struct_lit.member_names += prs->ast.len - 1 - ref;
+		prs->ast.nodes[prs->ast.len - 1].struct_lit.member_values += prs->ast.len - 1 - ref;
+		break;
+	default: break;
+	}
 	prs->ast.nodes[ref] = prs->ast.nodes[prs->ast.len - 1];
 	prs->ast.len -= 1;
 
@@ -2053,12 +2113,12 @@ RET:
 static void handle_VAR_DECL_INIT(Parser *prs, size_t *index, Error *err)
 {
 	if(prs->tokens[*index].type == TOKEN_ASSIGN) {
-		nodelist_alloc(&prs->ast, 1, err);
-		if(*err) goto RET;
-
 		*index += 1;
 
-		prs->ast.nodes[parsestack_pop(&prs->parse_stack).ref].var_decl.initial = prs->ast.len - 1;	
+		size_t ref = parsestack_pop(&prs->parse_stack).ref;
+		prs->ast.nodes[ref].var_decl.initial = prs->ast.len - ref;	
+		nodelist_alloc(&prs->ast, 1, err);
+		if(*err) goto RET;
 		parsestack_push(&prs->parse_stack, (ParseState) {PARSE_STATE_EXPR, prs->ast.len - 1}, err);
 		if(*err) goto RET;
 	} else {
@@ -2078,13 +2138,33 @@ static void handle_ASSIGNMENT(Parser *prs, size_t *index, Error *err)
 	case TOKEN_ADD_ASSIGN:
 	case TOKEN_SUB_ASSIGN:
 	case TOKEN_MUL_ASSIGN:
-	case TOKEN_DIV_ASSIGN:
-		nodelist_push(&prs->ast, prs->ast.nodes[ref], err);
+	case TOKEN_DIV_ASSIGN: {
+		size_t var;
+		if(prs->ast.nodes[ref].type == AST_BLOCK) {
+			var = prs->ast.nodes[ref].block.statements + ref;
+		} else {
+			var = prs->ast.nodes[ref].com.next + ref;
+		}
+		nodelist_push(
+			&prs->ast,
+			(AstNode) {
+				.assign = {
+					.com = {
+						.type = AST_ASSIGN + prs->tokens[*index].type - TOKEN_ASSIGN,
+						.debug = prs->tokens[*index].debug.debug_info
+					},
+					.var = var - prs->ast.len,
+					.expr = 1,
+				},
+			},
+			err
+		);
 		if(*err) goto RET;
-		prs->ast.nodes[ref].type = AST_ASSIGN + prs->tokens[*index].type - TOKEN_ASSIGN;
-		prs->ast.nodes[ref].debug.debug_info = prs->tokens[*index].debug.debug_info;
-		prs->ast.nodes[ref].assign.var = prs->ast.len - 1;
-		prs->ast.nodes[ref].assign.expr = prs->ast.len;
+		if(prs->ast.nodes[ref].type == AST_BLOCK) {
+			prs->ast.nodes[ref].block.statements = prs->ast.len - 1 - ref;
+		} else {
+			prs->ast.nodes[ref].com.next = prs->ast.len - 1 - ref;
+		}
 
 		nodelist_alloc(&prs->ast, 1, err);
 		if(*err) goto RET;
@@ -2092,10 +2172,10 @@ static void handle_ASSIGNMENT(Parser *prs, size_t *index, Error *err)
 		*parsestack_top(&prs->parse_stack) = (ParseState) {PARSE_STATE_EXPR, prs->ast.len - 1};
 
 		*index += 1;
-		break;
+	} break;
 
 	default:
-		if(prs->ast.nodes[ref].type == AST_FN_CALL) {
+		if(prs->ast.nodes[ref + prs->ast.nodes[ref].com.next].type == AST_FN_CALL) {
 			parsestack_pop(&prs->parse_stack);
 			break;
 		}
@@ -2154,6 +2234,7 @@ static void handle_STRUCT_TYPE(Parser *prs, size_t *index, Error *err)
 	}
 
 	size_t id = prs->tokens[*index].ident.id;
+	DebugInfo name_debug = prs->tokens[*index].debug.debug_info;
 
 	*index += 1;
 
@@ -2170,25 +2251,36 @@ static void handle_STRUCT_TYPE(Parser *prs, size_t *index, Error *err)
 	*index += 1;
 
 	prs->ast.nodes[ref].struct_type.member_count += 1;
-	prs->ast.nodes[ref].struct_type.member_name_ids = realloc(
-		prs->ast.nodes[ref].struct_type.member_name_ids,
-		prs->ast.nodes[ref].struct_type.member_count * sizeof(size_t)
-	);
-	CHECK_MALLOC(prs->ast.nodes[ref].struct_type.member_name_ids);
-	prs->ast.nodes[ref].struct_type.member_types = realloc(
-		prs->ast.nodes[ref].struct_type.member_types,
-		prs->ast.nodes[ref].struct_type.member_count * sizeof(size_t)
-	);
-	CHECK_MALLOC(prs->ast.nodes[ref].struct_type.member_types);
 
-	prs->ast.nodes[ref].struct_type.member_name_ids[
-		prs->ast.nodes[ref].struct_type.member_count - 1
-	] = id;
+	if(!prs->ast.nodes[ref].struct_type.member_names) {
+		prs->ast.nodes[ref].struct_type.member_names = prs->ast.len - ref;
+		prs->ast.nodes[ref].struct_type.member_types = prs->ast.len + 1 - ref;
+	} else {
+		AstNode *member_name = &prs->ast.nodes[ref + prs->ast.nodes[ref].struct_type.member_names];
+		while(member_name->com.next) {
+			member_name += member_name->com.next;
+		}
+		member_name->com.next = prs->ast.len - (member_name - prs->ast.nodes);
 
-	prs->ast.nodes[ref].struct_type.member_types[
-		prs->ast.nodes[ref].struct_type.member_count - 1
-	] = prs->ast.len;
-	
+		AstNode *member_type = &prs->ast.nodes[ref + prs->ast.nodes[ref].struct_type.member_types];
+		while(member_type->com.next) {
+			member_type += member_type->com.next;
+		}
+		member_type->com.next = prs->ast.len + 1 - (member_type - prs->ast.nodes);
+	}
+
+	nodelist_push(
+		&prs->ast,
+		(AstNode) {
+			.ident = {
+				.com = {AST_IDENT, name_debug},
+				.id = id,
+			},
+		},
+		err
+	);
+	if(*err) goto RET;
+
 	nodelist_alloc(&prs->ast, 1, err);
 	if(*err) goto RET;
 
@@ -2202,6 +2294,7 @@ RET:
 static void handle_EXTERN(Parser *prs, size_t *index, Error *err)
 {
 	const DebugInfo debug = prs->tokens[*index].debug.debug_info;
+	size_t ref = parsestack_pop(&prs->parse_stack).ref;
 
 	*index += 1;
 
@@ -2231,8 +2324,7 @@ static void handle_EXTERN(Parser *prs, size_t *index, Error *err)
 		&prs->ast,
 		(AstNode) {
 			.string_lit = {
-				.type = AST_STRING_LIT,
-				.debug_info = prs->tokens[*index].debug.debug_info,
+				.com = {AST_STRING_LIT, prs->tokens[*index].debug.debug_info},
 				.id = prs->tokens[*index].string_lit.id,
 			},
 		},
@@ -2254,11 +2346,10 @@ static void handle_EXTERN(Parser *prs, size_t *index, Error *err)
 
 	*index += 1;
 
-	prs->ast.nodes[parsestack_pop(&prs->parse_stack).ref] = (AstNode) {
+	prs->ast.nodes[ref] = (AstNode) {
 		.extrn = {
-			.type = AST_EXTERN,
-			.debug_info = debug,
-			.name = prs->ast.len - 1,
+			.com = {AST_EXTERN, debug},
+			.name = prs->ast.len - 1 - ref,
 		},
 	};
 
@@ -2317,26 +2408,21 @@ static void handle_ELSE(Parser *prs, size_t *index, Error *err)
 
 		*index += 1;
 
-		prs->ast.nodes[ref].if_statement.else_block = prs->ast.len;
+		prs->ast.nodes[ref].if_statement.else_block = prs->ast.len - ref;
 		nodelist_alloc(&prs->ast, 1, err);
 		if(*err) goto RET;
 
 		if(prs->tokens[*index].type == TOKEN_IF) {
 			prs->ast.nodes[prs->ast.len - 1] = (AstNode) {
 				.block = {
-					.type = AST_BLOCK,
-					.debug_info = prs->tokens[*index].debug.debug_info,
-					.statements = malloc(sizeof(size_t)),
-					.statement_count = 1,
+					.com = {AST_BLOCK, prs->tokens[*index].debug.debug_info},
+					.statements = 1,
 				},
 			};
-			CHECK_MALLOC(prs->ast.nodes[prs->ast.len - 1].block.statements);
 
-			prs->ast.nodes[prs->ast.len - 1].block.statements[0] = prs->ast.len;
-			nodelist_alloc(&prs->ast, 1, err);
+			parsestack_push(&prs->parse_stack, (ParseState) {PARSE_STATE_IF, prs->ast.len}, err);
 			if(*err) goto RET;
-
-			parsestack_push(&prs->parse_stack, (ParseState) {PARSE_STATE_IF, prs->ast.len - 1}, err);
+			nodelist_alloc(&prs->ast, 1, err);
 			if(*err) goto RET;
 		} else {
 			if(prs->tokens[*index].type != TOKEN_LCURLY) {
@@ -2349,7 +2435,11 @@ static void handle_ELSE(Parser *prs, size_t *index, Error *err)
 				goto RET;
 			}
 
-			parsestack_push(&prs->parse_stack, (ParseState) {PARSE_STATE_BLOCK, prs->ast.len - 1}, err);
+			parsestack_push(
+				&prs->parse_stack,
+				(ParseState) {PARSE_STATE_BLOCK, prs->ast.len-1},
+				err
+			);
 			if(*err) goto RET;
 		}
 	}
@@ -2359,8 +2449,9 @@ RET:
 
 static void handle_CONDITION(Parser *prs, size_t *index, Error *err)
 {
+	size_t ref = parsestack_top(&prs->parse_stack)->ref;
 	if(prs->tokens[*index].type != TOKEN_RPAREN) {
-		prs->ast.nodes[parsestack_top(&prs->parse_stack)->ref].if_statement.condition = prs->ast.len;
+		prs->ast.nodes[ref].if_statement.condition = prs->ast.len - ref;
 		nodelist_alloc(&prs->ast, 1, err);
 		if(*err) goto RET;
 		*parsestack_top(&prs->parse_stack) = (ParseState) {PARSE_STATE_EXPR, prs->ast.len - 1};
@@ -2374,7 +2465,11 @@ RET:
 
 void parser_parse(Parser *prs, Error *err)
 {
-	nodelist_push(&prs->ast, (AstNode) {.module = {AST_MODULE, prs->tokens[0].debug.debug_info}}, err);
+	nodelist_push(
+		&prs->ast,
+		(AstNode) {.com = {AST_MODULE, prs->tokens[0].debug.debug_info}},
+		err
+	);
 	if(*err) goto RET;
 	parsestack_push(&prs->parse_stack, (ParseState) {PARSE_STATE_MODULE, 0}, err);
 	if(*err) goto RET;
